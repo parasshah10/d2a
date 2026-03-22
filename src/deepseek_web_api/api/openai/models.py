@@ -1,6 +1,5 @@
 """OpenAI /v1/models endpoint."""
 
-import time
 from fastapi import APIRouter
 
 router = APIRouter()

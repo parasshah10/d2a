@@ -137,13 +137,53 @@ async def create_session_on_deepseek() -> str | None:
 
 
 async def delete_session(chat_session_id: str) -> None:
-    """Delete session from local store and DeepSeek backend."""
+    """Delete session from DeepSeek backend and clean up local store."""
+    max_retries = 5
+    retry_delay = 0.5
+    last_exc = None
+
+    for attempt in range(max_retries):
+        try:
+            resp = await proxy_to_deepseek(
+                "POST",
+                _PATH_DELETE_SESSION,
+                json_data={"chat_session_id": chat_session_id},
+            )
+            logger.warning(f"[delete_session] attempt {attempt+1}: status={resp.status_code}")
+
+            # Check biz_code from delete response
+            if resp.body:
+                try:
+                    data = json.loads(resp.body)
+                    biz_code = data.get("data", {}).get("biz_code")
+                    if biz_code == 0:
+                        # Delete succeeded
+                        logger.warning("[delete_session] session deleted")
+                        break
+                    else:
+                        biz_msg = data.get("data", {}).get("biz_msg", "unknown error")
+                        logger.warning(f"[delete_session] biz_code={biz_code}, msg={biz_msg}, retrying...")
+                except json.JSONDecodeError:
+                    logger.warning(f"[delete_session] failed to parse response, retrying...")
+
+            # Retry on failure
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            continue
+        except Exception as e:
+            last_exc = e
+            logger.warning(f"[delete_session] attempt {attempt+1} exception: {type(e).__name__}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            continue
+
+    if last_exc:
+        logger.warning(f"[delete_session] all {max_retries} attempts failed, last error: {last_exc}")
+
+    # Always clean up local store, regardless of backend result
     await session_store.adelete_session(chat_session_id)
-    await proxy_to_deepseek(
-        "POST",
-        _PATH_DELETE_SESSION,
-        json_data={"chat_session_id": chat_session_id},
-    )
 
 
 async def create_session(body: dict = None) -> Response:
@@ -166,10 +206,10 @@ async def create_session(body: dict = None) -> Response:
 
     if resp.body:
         try:
-            data = json.loads(resp.body)
-            chat_session_id = data.get("data", {}).get("biz_data", {}).get("id")
+            chat_session_id = extract_chat_session_id(resp.body)
             if chat_session_id:
                 await session_store.acreate_session(chat_session_id)
+                data = json.loads(resp.body)
                 data["chat_session_id"] = chat_session_id
                 return Response(
                     content=json.dumps(data),
@@ -270,62 +310,43 @@ async def stream_chat_completion(
     Yields:
         bytes: Raw SSE response chunks from DeepSeek
     """
-    max_retries = 3
-    retry_delay = 1.0
-    collected = b""
-    last_exception = None
-
-    for attempt in range(max_retries):
-        # Determine chat_session_id and parent_message_id (fresh for each attempt)
-        if chat_session_id:
-            parent_message_id = await session_store.aget_parent_message_id(chat_session_id)
-            if not await session_store.ahas_session(chat_session_id):
-                await session_store.acreate_session(chat_session_id)
-                parent_message_id = None
-        else:
-            # Pre-create session so we can return the session_id in header
-            chat_session_id = await create_session_on_deepseek()
+    # Determine chat_session_id and parent_message_id
+    if chat_session_id:
+        parent_message_id = await session_store.aget_parent_message_id(chat_session_id)
+        if not await session_store.ahas_session(chat_session_id):
+            await session_store.acreate_session(chat_session_id)
             parent_message_id = None
+    else:
+        # Pre-create session so we can return the session_id in header
+        chat_session_id = await create_session_on_deepseek()
+        parent_message_id = None
 
-        # Get PoW
-        pow_response = get_pow_response()
+    # Get PoW
+    pow_response = get_pow_response()
 
-        # Build payload for DeepSeek
-        payload = {
-            "chat_session_id": chat_session_id,
-            "parent_message_id": parent_message_id,
-            "preempt": False,
-            "prompt": prompt,
-            "ref_file_ids": ref_file_ids or [],
-            "search_enabled": search_enabled,
-            "thinking_enabled": thinking_enabled,
-        }
+    # Build payload for DeepSeek
+    payload = {
+        "chat_session_id": chat_session_id,
+        "parent_message_id": parent_message_id,
+        "preempt": False,
+        "prompt": prompt,
+        "ref_file_ids": ref_file_ids or [],
+        "search_enabled": search_enabled,
+        "thinking_enabled": thinking_enabled,
+    }
 
-        headers = {"x-ds-pow-response": pow_response} if pow_response else {}
+    headers = {"x-ds-pow-response": pow_response} if pow_response else {}
 
-        try:
-            async for chunk in proxy_to_deepseek_stream(
-                "POST",
-                _PATH_COMPLETION,
-                headers=headers,
-                json_data=payload,
-            ):
-                collected += chunk
-                yield chunk
-            break  # Success, exit retry loop
-        except (httpx.ConnectError, httpx.RemoteProtocolError, OSError) as e:
-            last_exception = e
-            if attempt < max_retries - 1:
-                logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}, retrying in {retry_delay}s...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-                # Delete failed session and create fresh one for next attempt
-                if chat_session_id:
-                    await session_store.adelete_session(chat_session_id)
-                    chat_session_id = None
-            else:
-                logger.error(f"Request failed after {max_retries} attempts: {e}")
-                raise last_exception
+    # Stream and collect
+    collected = b""
+    async for chunk in proxy_to_deepseek_stream(
+        "POST",
+        _PATH_COMPLETION,
+        headers=headers,
+        json_data=payload,
+    ):
+        collected += chunk
+        yield chunk
 
     # Update session with message_id after stream completes
     if chat_session_id:

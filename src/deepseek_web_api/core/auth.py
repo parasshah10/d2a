@@ -1,6 +1,7 @@
 """Authentication for single account mode."""
 
 import logging
+import threading
 
 from curl_cffi import requests
 
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 # Global single account
 _account = None
 _token = None
+_token_lock = threading.Lock()  # Protect _token check-and-set
 
 
 def init_single_account():
@@ -55,7 +57,7 @@ def login() -> str:
     resp.close()
 
     if data.get("data") is None or data["data"].get("biz_data") is None:
-        raise ValueError(f"Login failed: invalid response format")
+        raise ValueError("Login failed: invalid response format")
 
     new_token = data["data"]["biz_data"]["user"].get("token")
     if not new_token:
@@ -70,9 +72,10 @@ def login() -> str:
 def get_token() -> str:
     """Get current token, login if needed."""
     global _token
-    if not _token:
-        init_single_account()
-    return _token
+    with _token_lock:
+        if not _token:
+            init_single_account()
+        return _token
 
 
 def get_auth_headers() -> dict:

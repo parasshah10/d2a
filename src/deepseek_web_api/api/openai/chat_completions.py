@@ -1,5 +1,6 @@
 """OpenAI /v1/chat/completions endpoint - using api.chat_completions_service."""
 
+import asyncio
 import json
 import re
 import time
@@ -397,34 +398,94 @@ async def chat_completions(request: Request):
         search_enabled = False
         thinking_enabled = False
 
-    # Create session first, delete after stream ends
-    chat_session_id = await create_session_on_deepseek()
+    STREAM_BUFFER_THRESHOLD = 100  # Start yielding after buffering this many chunks
 
     if validated.stream:
-        async def stream_with_cleanup():
-            """Wrapper generator that ensures session cleanup after stream ends."""
-            try:
-                async for chunk in stream_generator(prompt, validated.model, search_enabled, thinking_enabled, validated.tools, chat_session_id):
-                    yield chunk
-            finally:
-                if chat_session_id:
-                    await delete_session(chat_session_id)
+        async def stream_with_session():
+            """Generator with buffer and retry inside, yields when buffer threshold reached."""
+            max_retries = 3
+            retry_delay = 1.0
+            for attempt in range(max_retries):
+                chat_session_id = await create_session_on_deepseek()
+                buffered = []
+                started_yielding = False
+                success = False
+                try:
+                    async for chunk in stream_generator(prompt, validated.model, search_enabled, thinking_enabled, validated.tools, chat_session_id):
+                        if not started_yielding:
+                            buffered.append(chunk)
+                            if len(buffered) >= STREAM_BUFFER_THRESHOLD:
+                                # Start yielding buffered chunks
+                                for b in buffered:
+                                    yield b
+                                buffered.clear()
+                                started_yielding = True
+                        else:
+                            yield chunk
+                    success = True
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Stream request failed (attempt {attempt + 1}/{max_retries}): {e}, retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        logger.error(f"Stream request failed after {max_retries} attempts: {e}")
+                        raise
+                finally:
+                    # Clean up session on every exit (success or failure)
+                    if chat_session_id:
+                        try:
+                            await delete_session(chat_session_id)
+                        except Exception as e:
+                            logger.warning(f"[stream_with_session] delete_session failed: {e}")
+                # Flush remaining buffered chunks on failure
+                if not success and buffered and not started_yielding:
+                    for b in buffered:
+                        yield b
+                if success:
+                    break
 
         return StreamingResponse(
-            stream_with_cleanup(),
+            stream_with_session(),
             media_type="text/event-stream",
         )
 
-    # Non-streaming: buffer streaming output, then release at once
-    chunks = []
-    try:
-        async for chunk in stream_generator(prompt, validated.model, search_enabled, thinking_enabled, validated.tools, chat_session_id):
-            chunks.append(chunk)
-    finally:
-        if chat_session_id:
-            await delete_session(chat_session_id)
+    # Non-streaming: buffer all chunks first, then return
+    max_retries = 3
+    retry_delay = 1.0
+    last_exc = None
+    for attempt in range(max_retries):
+        chat_session_id = await create_session_on_deepseek()
+        chunks = []
+        try:
+            async for chunk in stream_generator(prompt, validated.model, search_enabled, thinking_enabled, validated.tools, chat_session_id):
+                chunks.append(chunk)
+            break  # Success
+        except Exception as e:
+            # Clean up the session created in this failed attempt before retry
+            if chat_session_id:
+                try:
+                    await delete_session(chat_session_id)
+                except Exception as delete_err:
+                    logger.warning(f"[non-stream] delete_session failed: {delete_err}")
+            last_exc = e
+            if attempt < max_retries - 1:
+                logger.warning(f"Non-stream request failed (attempt {attempt + 1}/{max_retries}): {e}, retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                logger.error(f"Non-stream request failed after {max_retries} attempts: {e}")
+                raise last_exc
+        else:
+            # Success: clean up before breaking out
+            if chat_session_id:
+                try:
+                    await delete_session(chat_session_id)
+                except Exception as e:
+                    logger.warning(f"[non-stream] delete_session failed: {e}")
+            break
 
-    # Parse buffered chunks (reuse streaming logic)
+    # Parse buffered chunks
     content_chunks = []
     reasoning_chunks = []
     all_tool_calls = []
