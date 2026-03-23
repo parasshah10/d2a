@@ -177,16 +177,27 @@ OpenAI兼容的对话完成接口，支持完整的工具调用功能。
 
 ### OpenAI 适配器 (`/v1/chat/completions`)
 OpenAI兼容适配器通过向内部 `/v0/chat/completion` 端点注入提示词来工作：
-- 将 OpenAI 的 `messages` 数组转换为带角色标记的提示词格式
+- 将 OpenAI 的 `messages` 数组转换为带角色标记（User/Assistant/Tool）的提示词格式
 - 将工具schema注入系统指令，说明使用 `[TOOL🛠️]...[/TOOL🛠️]` 格式回复
 - 实时解析流式SSE响应，提取工具调用标记
-- 通过将工具结果作为 `[TOOL_RESULT]` 标记传回来支持多轮对话
+- 通过将工具结果作为 `Tool:` 标记传回来支持多轮对话
+- **防幻觉截断机制**：检测并解析到工具调用后，立即终止流，防止模型幻觉虚假的 `Tool:` 结果
+
+**防幻觉机制**：
+当模型输出 `[TOOL🛠️]...[/TOOL🛠️]` 时：
+1. 适配器提取并解析工具调用 JSON
+2. 向客户端发送 `tool_calls` chunk 和 `finish_reason=tool_calls`
+3. 发送 `data: [DONE]\n\n` 通知流结束
+4. 继续消费 DeepSeek 剩余流（丢弃数据），以正确关闭连接
+
+这可以防止模型在实际工具调用后生成幻觉的 `Tool:` 结果，这是模型在工具调用块之后继续输出时的常见问题。
 
 ## TODO
 
 - [x] 简单包装 deepseek_web_chat API
 - [x] 实现 openai_chat_completions 协议适配器
 - [x] openai适配器的流式工具调用提取
+- [ ] 解决会话完成后web端的删除收尾bug仍未解决(偶然触发)
 - [ ] 通过 [litellm](https://github.com/BerriAI/litellm) 实现 claude_message 协议适配器（转换OpenAI协议到Claude协议）
 
 ## 架构
@@ -194,9 +205,19 @@ OpenAI兼容适配器通过向内部 `/v0/chat/completion` 端点注入提示词
 ```
 客户端 --> DeepSeek Web API --> DeepSeek 后端
               |
-              +-- 认证管理（自动）
-              +-- PoW 求解
-              +-- 会话状态管理
+              +-- OpenAI 兼容层 (/v1/chat/completions)
+              |      |
+              |      +-- Messages → Prompt 转换
+              |      +-- 工具调用提取与截断
+              |      +-- SSE → OpenAI 格式转换
+              |
+              +-- 内部 API 层 (/v0/chat/*)
+              |      |
+              |      +-- 会话管理
+              |      +-- PoW 求解
+              |      +-- 认证管理
+              |
+              +-- DeepSeek 后端
 ```
 
 ## 免责声明

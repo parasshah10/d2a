@@ -164,7 +164,7 @@ async def delete_session(chat_session_id: str) -> None:
                         biz_msg = data.get("data", {}).get("biz_msg", "unknown error")
                         logger.warning(f"[delete_session] biz_code={biz_code}, msg={biz_msg}, retrying...")
                 except json.JSONDecodeError:
-                    logger.warning(f"[delete_session] failed to parse response, retrying...")
+                    logger.warning("[delete_session] failed to parse response, retrying...")
 
             # Retry on failure
             if attempt < max_retries - 1:

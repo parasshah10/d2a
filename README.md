@@ -181,16 +181,27 @@ See [API.md](./API.md) for detailed documentation.
 
 ### OpenAI Adapter (`/v1/chat/completions`)
 The OpenAI-compatible adapter works by injecting prompts into the internal `/v0/chat/completion` endpoint:
-- Converts OpenAI `messages` array to a prompt format with role markers
+- Converts OpenAI `messages` array to a prompt format with role markers (User/Assistant/Tool)
 - Injects tool schemas into system instructions with `[TOOL🛠️]...[/TOOL🛠️]` response format
 - Parses streaming SSE responses to extract tool call markers in real-time
-- Supports multi-turn conversations by passing tool results back as `[TOOL_RESULT]` markers
+- Supports multi-turn conversations by passing tool results back as `Tool:` markers
+- **Anti-hallucination truncation**: When tool calls are detected and parsed, the stream is terminated immediately after sending `[DONE]`, preventing the model from hallucinating fake `Tool:` results
+
+**Anti-Hallucination Mechanism**:
+When the model outputs `[TOOL🛠️]...[/TOOL🛠️]`:
+1. The adapter extracts and parses the tool call JSON
+2. Sends the `tool_calls` chunk and `finish_reason=tool_calls` to the client
+3. Sends `data: [DONE]\n\n` to signal stream end
+4. Continues consuming the remaining DeepSeek stream (discarding data) to properly close the connection
+
+This prevents the model from generating hallucinated `Tool:` results after the actual tool calls, which was a common issue when the model continued outputting after the tool call block.
 
 ## TODO
 
 - [x] Simple wrapper for deepseek_web_chat API
 - [x] Implement openai_chat_completions protocol adapter
 - [x] Streaming tool call extraction for openai adapter
+- [ ] Fix occasional bug: web session deletion cleanup not completed after conversation ends
 - [ ] Implement claude_message protocol adapter via [litellm](https://github.com/BerriAI/litellm) (convert OpenAI protocol to Claude protocol)
 
 ## Architecture
@@ -198,9 +209,19 @@ The OpenAI-compatible adapter works by injecting prompts into the internal `/v0/
 ```
 Client --> DeepSeek Web API --> DeepSeek Backend
               |
-              +-- Authentication (auto-managed)
-              +-- PoW solving
-              +-- Session state management
+              +-- OpenAI Compatible Layer (/v1/chat/completions)
+              |      |
+              |      +-- Messages → Prompt conversion
+              |      +-- Tool call extraction & truncation
+              |      +-- SSE → OpenAI format conversion
+              |
+              +-- Internal API Layer (/v0/chat/*)
+              |      |
+              |      +-- Session management
+              |      +-- PoW solving
+              |      +-- Authentication
+              |
+              +-- DeepSeek Backend
 ```
 
 ## Disclaimer

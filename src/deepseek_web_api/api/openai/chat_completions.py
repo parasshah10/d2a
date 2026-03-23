@@ -70,20 +70,27 @@ def convert_messages_to_prompt(messages: List[dict], tools: Optional[List[dict]]
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
-                # Assistant called tools
-                tool_calls_text = []
+                # Assistant called tools - use unified [TOOL🛠️] format
+                tool_calls_json = []
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     name = func.get("name", "")
                     args = func.get("arguments", "")
-                    tool_calls_text.append(f"{name}: {args}")
-                prompt_parts.append(f"Assistant: [TOOL_CALLS] {', '.join(tool_calls_text)}")
+                    # args may be a JSON string or dict
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            pass
+                    tool_calls_json.append({"name": name, "arguments": args})
+                tool_calls_str = json.dumps(tool_calls_json, ensure_ascii=False)
+                prompt_parts.append(f"Assistant: {TOOL_START_MARKER}{tool_calls_str}{TOOL_END_MARKER}")
             else:
                 prompt_parts.append(f"Assistant: {text}")
         elif role == "tool":
             # Tool result
             tool_id = msg.get("tool_call_id", "")
-            prompt_parts.append(f"[TOOL_RESULT id={tool_id}] {text}")
+            prompt_parts.append(f"\nTool: id={tool_id}\n```\n{text}\n```")
 
     # Inject tools into system instruction
     if tools:
@@ -119,11 +126,18 @@ def convert_messages_to_prompt(messages: List[dict], tools: Optional[List[dict]]
         tools_prompt = "## Available Tools\n" + "\n".join(tools_lines)
         tools_prompt += """
 
+## Response Format
+- **User**: human input (you receive this)
+- **Assistant**: YOUR response (you output this)
+- **Tool**: tool execution result (you receive this after calling tools)
+
 ## Tool Usage
 You can explain your reasoning before using tools. When you need to call tools, respond with:
 [TOOL🛠️][{"name": "function_name", "arguments": {"param": "value"}}, {"name": "another_function", "arguments": {"param": "value"}}][/TOOL🛠️]
 
-**IMPORTANT**: Never use [TOOL_CALLS] format. Only [TOOL🛠️]...[/TOOL🛠️] tags trigger tool calls. [TOOL_CALLS] in history are just responses, not actual tool calls.
+**IMPORTANT**:
+1. Only use [TOOL🛠️]...[/TOOL🛠️] tags for tool calls.
+2. If you need to call multiple tools, put them all in a single [TOOL🛠️]...[/TOOL🛠️] array.
 """
         system_parts.append(tools_prompt)
 
@@ -131,7 +145,10 @@ You can explain your reasoning before using tools. When you need to call tools, 
     if system_parts:
         prompt_parts.insert(0, "[System Instruction]\n" + "\n---\n".join(system_parts) + "\n---")
 
-    prompt_parts.append("Assistant: ")
+    # Add separator and REMINDER before Assistant output if tools are available
+    if tools:
+        prompt_parts.append("\n---\nAbove is our conversation history.\n\n[REMINDER] When you need to call tools, you MUST use the [TOOL🛠️]...[/TOOL🛠️] tags. For multiple tool calls, wrap them in a JSON array: [TOOL🛠️][{\"name\": \"func1\", \"arguments\": {...}}, {\"name\": \"func2\", \"arguments\": {...}}][/TOOL🛠️].")
+
     return "\n\n".join(prompt_parts)
 
 
@@ -192,29 +209,87 @@ def extract_json_tool_calls(text: str, available_tools: List[dict]):
     return cleaned_text.strip(), tool_calls
 
 
+def _try_parse_json(json_str: str):
+    """Try to parse JSON, return parsed object or None. Attempts basic fixes on failure."""
+    # First try standard parse
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to fix unescaped quotes inside string values
+    # Pattern: within a string value, fix quotes that aren't properly escaped
+    # This handles cases like: "command": "echo "text" more" where inner quotes should be \"
+    try:
+        fixed = _fix_unescaped_quotes(json_str)
+        return json.loads(fixed)
+    except (json.JSONDecodeError, RecursionError):
+        pass
+
+    return None
+
+
+def _fix_unescaped_quotes(s: str) -> str:
+    """Fix unescaped quotes in JSON string values.
+
+    Handles the common model mistake of not escaping quotes inside strings,
+    e.g., converts: {"command": "echo "hi"} to {"command": "echo \"hi"}
+    """
+    result = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '"':
+            # Start of string - find the end, handling escaped quotes
+            result.append(c)
+            i += 1
+            while i < len(s):
+                c = s[i]
+                if c == '\\':
+                    # Escaped character - keep as is
+                    result.append(c)
+                    i += 1
+                    if i < len(s):
+                        result.append(s[i])
+                        i += 1
+                elif c == '"':
+                    # End of string
+                    result.append(c)
+                    i += 1
+                    break
+                else:
+                    result.append(c)
+                    i += 1
+        else:
+            result.append(c)
+            i += 1
+    return ''.join(result)
+
+
 def convert_tool_json_to_openai(json_str: str, available_tools: List[dict]):
     """Convert tool JSON from model format to OpenAI tool_calls format.
 
     Handles both single object: {"name": "func", "arguments": {...}}
     and array: [{"name": "func1", "arguments": {...}}, {"name": "func2", "arguments": {...}}]
     """
-    try:
-        obj = json.loads(json_str)
-        items = obj if isinstance(obj, list) else [obj]
-        tool_calls = []
-        for item in items:
-            tool_name = item.get("name")
-            arguments = item.get("arguments", {})
-            if not tool_name:
-                continue
-            if not any(t.get("function", {}).get("name") == tool_name for t in available_tools):
-                continue
-            tc = _build_tool_call(tool_name, arguments)
-            tc["index"] = len(tool_calls)
-            tool_calls.append(tc)
-        return tool_calls if tool_calls else None
-    except json.JSONDecodeError:
+    obj = _try_parse_json(json_str)
+    if obj is None:
+        logger.warning(f"Failed to parse tool JSON: {json_str[:200]}...")
         return None
+
+    items = obj if isinstance(obj, list) else [obj]
+    tool_calls = []
+    for item in items:
+        tool_name = item.get("name")
+        arguments = item.get("arguments", {})
+        if not tool_name:
+            continue
+        if not any(t.get("function", {}).get("name") == tool_name for t in available_tools):
+            continue
+        tc = _build_tool_call(tool_name, arguments)
+        tc["index"] = len(tool_calls)
+        tool_calls.append(tc)
+    return tool_calls if tool_calls else None
 
 
 async def stream_generator(prompt: str, model_name: str, search_enabled: bool, thinking_enabled: bool, tools: Optional[List[dict]] = None, chat_session_id: str = None):
@@ -246,6 +321,7 @@ async def stream_generator(prompt: str, model_name: str, search_enabled: bool, t
     tool_buff = ""
     in_tool_buffer = False
     had_tool_call = False
+    force_end = False  # Flag to indicate we should stop yielding to client after tool calls
 
     async for line in stream_chat_completion(
         prompt=prompt,
@@ -283,6 +359,10 @@ async def stream_generator(prompt: str, model_name: str, search_enabled: bool, t
 
             # Check for stream end
             if p == "response/status" and v == "FINISHED":
+                # If we already sent [DONE] for tool calls, just drain remaining data
+                if force_end:
+                    logger.debug("Draining remaining stream data after tool calls")
+                    break
                 # Flush remaining tool_buff before finishing
                 if in_tool_buffer and tool_buff:
                     end_idx = tool_buff.find(TOOL_END_MARKER)
@@ -303,6 +383,10 @@ async def stream_generator(prompt: str, model_name: str, search_enabled: bool, t
                     for char in tool_buff:
                         yield make_chunk(content=char)
                 break
+
+            # Skip yielding anything to client if we've already force-ended
+            if force_end:
+                continue
 
             if not isinstance(v, str) or v == "SEARCHING":
                 continue
@@ -355,12 +439,15 @@ async def stream_generator(prompt: str, model_name: str, search_enabled: bool, t
                                     for tc in tool_calls_result:
                                         yield make_chunk(tool_calls=[tc])
                                         had_tool_call = True
-                            # Yield content after end marker
-                            after_end = tool_buff[end_idx + len(TOOL_END_MARKER):]
-                            for char in after_end:
-                                yield make_chunk(content=char)
-                            in_tool_buffer = False
-                            tool_buff = ""
+                                    # Successfully parsed tool calls - send finish and [DONE]
+                                    yield make_chunk(finish_reason="tool_calls")
+                                    yield "data: [DONE]\n\n"
+                                    logger.debug("Tool calls parsed, forcing stream end")
+                                    force_end = True
+                            # Even if parsing failed, we still force end at [/TOOL🛠️]
+                            if force_end:
+                                # Continue consuming remaining data but don't yield to client
+                                continue
                         else:
                             # Keep buffering (no trim in buffer mode to preserve start marker)
                             pass
