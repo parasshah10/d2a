@@ -26,7 +26,7 @@ cp config.toml.example config.toml
 uv run python main.py
 ```
 
-**Note**: Only single-user mode is supported to prevent excessive load on DeepSeek's servers. Multi-user requests will not be implemented.
+**Note**: Only single-user mode is supported to prevent excessive load on DeepSeek's servers. ~Multi-user requests will not be implemented.~
 
 ## Configuration
 
@@ -155,6 +155,7 @@ When the model outputs `[TOOL🛠️]...[/TOOL🛠️]`:
 - [x] Implement openai_chat_completions protocol adapter
 - [x] Streaming tool call extraction for openai adapter
 - [ ] Implement claude_message protocol adapter via [litellm](https://github.com/BerriAI/litellm) (convert OpenAI protocol to Claude protocol)
+- [ ] Implement multi-user account load balancing to prevent DeepSeek rate limiting with concurrent requests
 
 ## Architecture
 
