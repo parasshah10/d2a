@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 from fastapi import Response
 
-from ..core.auth import get_auth_headers
+from ..core.auth import get_auth_headers, invalidate_token
 from ..core.pow import get_pow_response
 from ..core.parent_msg_store import ParentMsgStore
 from ..core.config import DEEPSEEK_HOST
@@ -26,6 +26,17 @@ _PATH_FETCH_FILES = "api/v0/file/fetch_files"
 _PATH_HISTORY_MESSAGES = "api/v0/chat/history_messages"
 
 DEEPSEEK_BASE_URL = f"https://{DEEPSEEK_HOST}"
+
+
+def _response_indicates_invalid_token(content: bytes) -> bool:
+    """Return True if DeepSeek response payload indicates token invalidation."""
+    if not content:
+        return False
+    try:
+        data = json.loads(content)
+    except Exception:
+        return False
+    return data.get("code") == 40003
 
 
 def parse_sse_response_message_id(content: bytes) -> int | None:
@@ -55,31 +66,39 @@ async def proxy_to_deepseek(
     """Proxy request to DeepSeek backend, return FastAPI Response."""
     url = f"{DEEPSEEK_BASE_URL}/{path}"
     logger.debug(f"[proxy] {method} {path}")
-    auth_headers = get_auth_headers()
-    if headers:
-        headers = {**headers, **auth_headers}
-    else:
-        headers = auth_headers
-    headers["Host"] = DEEPSEEK_HOST
-
-    if files is not None and "Content-Type" in headers:
-        del headers["Content-Type"]
+    max_retries = 2
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.request(
-            method=method,
-            url=url,
-            headers=headers,
-            json=json_data,
-            params=params,
-            content=content,
-            files=files,
-        )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=dict(resp.headers),
-        )
+        for attempt in range(max_retries):
+            auth_headers = get_auth_headers()
+            merged_headers = {**headers, **auth_headers} if headers else auth_headers
+            merged_headers["Host"] = DEEPSEEK_HOST
+
+            if files is not None and "Content-Type" in merged_headers:
+                del merged_headers["Content-Type"]
+
+            resp = await client.request(
+                method=method,
+                url=url,
+                headers=merged_headers,
+                json=json_data,
+                params=params,
+                content=content,
+                files=files,
+            )
+
+            if _response_indicates_invalid_token(resp.content) and attempt < max_retries - 1:
+                logger.warning(f"[proxy] token invalid on {path}, refreshing token and retrying...")
+                invalidate_token()
+                continue
+
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+            )
+
+        return Response(content=b"", status_code=502)
 
 
 async def proxy_to_deepseek_stream(
@@ -111,11 +130,12 @@ async def proxy_to_deepseek_stream(
                 yield chunk
 
 
-async def delete_session(chat_session_id: str) -> None:
+async def delete_session(chat_session_id: str) -> Response:
     """Delete session from DeepSeek backend and clean up local store."""
     max_retries = 5
     retry_delay = 0.5
     last_exc = None
+    last_resp = None
 
     for attempt in range(max_retries):
         try:
@@ -124,6 +144,7 @@ async def delete_session(chat_session_id: str) -> None:
                 _PATH_DELETE_SESSION,
                 json_data={"chat_session_id": chat_session_id},
             )
+            last_resp = resp
             logger.info(f"[delete_session] attempt {attempt+1}: status={resp.status_code}")
 
             # Check biz_code from delete response
@@ -160,6 +181,25 @@ async def delete_session(chat_session_id: str) -> None:
     # Always clean up local store, regardless of backend result
     await ParentMsgStore.get_instance().adelete(chat_session_id)
 
+    if last_resp is not None:
+        return last_resp
+
+    return Response(
+        content=json.dumps(
+            {
+                "code": -1,
+                "msg": "Failed to delete session after retries",
+                "data": {
+                    "biz_code": -1,
+                    "biz_msg": str(last_exc) if last_exc else "unknown error",
+                    "biz_data": None,
+                },
+            }
+        ),
+        status_code=502,
+        media_type="application/json",
+    )
+
 
 async def create_session(body: dict = None) -> tuple[str | None, Response]:
     """Create new session and return (session_id, response).
@@ -183,7 +223,21 @@ async def create_session(body: dict = None) -> tuple[str | None, Response]:
     if resp.body:
         try:
             data = json.loads(resp.body)
-            chat_session_id = data.get("data", {}).get("biz_data", {}).get("id")
+            payload = data.get("data")
+            if not isinstance(payload, dict):
+                logger.warning(
+                    f"[create_session] backend returned unexpected payload: status={resp.status_code}, body={resp.body[:300]!r}"
+                )
+                return None, resp
+
+            biz_data = payload.get("biz_data")
+            if not isinstance(biz_data, dict):
+                logger.warning(
+                    f"[create_session] backend returned unexpected biz_data: status={resp.status_code}, body={resp.body[:300]!r}"
+                )
+                return None, resp
+
+            chat_session_id = biz_data.get("id")
             if chat_session_id:
                 await ParentMsgStore.get_instance().acreate(chat_session_id)
                 data["chat_session_id"] = chat_session_id

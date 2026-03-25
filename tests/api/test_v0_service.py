@@ -87,6 +87,39 @@ class TestProxyToDeepseek:
         call_kwargs = mock_client.request.call_args[1]
         assert "Content-Type" not in call_kwargs["headers"]
 
+    @pytest.mark.asyncio
+    @patch("deepseek_web_api.api.v0_service.invalidate_token")
+    @patch("deepseek_web_api.api.v0_service.get_auth_headers")
+    @patch("deepseek_web_api.api.v0_service.httpx.AsyncClient")
+    async def test_proxy_retries_when_token_is_invalid(
+        self, mock_client_class, mock_get_auth_headers, mock_invalidate_token, mock_auth_headers
+    ):
+        mock_get_auth_headers.side_effect = [
+            {"authorization": "Bearer stale-token"},
+            {"authorization": "Bearer fresh-token"},
+        ]
+
+        invalid_response = MagicMock()
+        invalid_response.content = b'{"code":40003,"msg":"Authorization Failed (invalid token)","data":null}'
+        invalid_response.status_code = 200
+        invalid_response.headers = {}
+
+        success_response = MagicMock()
+        success_response.content = b'{"code":0,"data":{"biz_data":{"id":"session-123"}}}'
+        success_response.status_code = 200
+        success_response.headers = {}
+
+        mock_client = AsyncMock()
+        mock_client.request = AsyncMock(side_effect=[invalid_response, success_response])
+        mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_class.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await v0_service.proxy_to_deepseek("POST", "api/v0/test", json_data={"test": True})
+
+        assert result.status_code == 200
+        assert mock_client.request.await_count == 2
+        mock_invalidate_token.assert_called_once()
+
 
 class TestCreateSession:
     """Test create_session function."""
@@ -148,6 +181,39 @@ class TestCreateSession:
 
         assert session_id is None
 
+    @pytest.mark.asyncio
+    @patch("deepseek_web_api.api.v0_service.proxy_to_deepseek")
+    async def test_create_session_handles_unexpected_backend_payload(self, mock_proxy, reset_parent_msg_store):
+        mock_response = MagicMock()
+        mock_response.body = json.dumps({
+            "code": 40003,
+            "msg": "auth failed",
+            "data": None,
+        }).encode()
+        mock_response.status_code = 200
+        mock_proxy.return_value = mock_response
+
+        session_id, resp = await v0_service.create_session()
+
+        assert session_id is None
+        assert resp is mock_response
+
+    @pytest.mark.asyncio
+    @patch("deepseek_web_api.api.v0_service.proxy_to_deepseek")
+    async def test_create_session_recovers_after_invalid_token_retry(self, mock_proxy, reset_parent_msg_store):
+        mock_response = MagicMock()
+        mock_response.body = json.dumps({
+            "code": 0,
+            "data": {"biz_data": {"id": "session-789"}}
+        }).encode()
+        mock_response.status_code = 200
+        mock_proxy.return_value = mock_response
+
+        session_id, resp = await v0_service.create_session()
+
+        assert session_id == "session-789"
+        assert resp.status_code == 200
+
 
 class TestDeleteSession:
     """Test delete_session function."""
@@ -169,10 +235,11 @@ class TestDeleteSession:
         mock_response.status_code = 200
         mock_proxy.return_value = mock_response
 
-        await v0_service.delete_session("session-to-delete")
+        result = await v0_service.delete_session("session-to-delete")
 
         # Verify session was removed from store
         assert await store.ahas("session-to-delete") is False
+        assert result is mock_response
 
     @pytest.mark.asyncio
     @patch("deepseek_web_api.api.v0_service.proxy_to_deepseek")
@@ -186,10 +253,12 @@ class TestDeleteSession:
         # Simulate backend failure
         mock_proxy.side_effect = Exception("Network error")
 
-        await v0_service.delete_session("session-fail")
+        result = await v0_service.delete_session("session-fail")
 
         # Verify session was still removed from store
         assert await store.ahas("session-fail") is False
+        assert result.status_code == 502
+        assert b"Failed to delete session after retries" in result.body
 
     @pytest.mark.asyncio
     @patch("deepseek_web_api.api.v0_service.proxy_to_deepseek")
@@ -210,9 +279,25 @@ class TestDeleteSession:
 
         mock_proxy.side_effect = [fail_response, success_response]
 
-        await v0_service.delete_session("session-retry")
+        result = await v0_service.delete_session("session-retry")
 
         assert mock_proxy.call_count == 2
+        assert result is success_response
+
+    @pytest.mark.asyncio
+    @patch("deepseek_web_api.api.v0_service.proxy_to_deepseek")
+    async def test_delete_session_returns_last_backend_response_on_biz_failure(self, mock_proxy, reset_parent_msg_store):
+        fail_response = MagicMock()
+        fail_response.body = json.dumps({
+            "data": {"biz_code": 1, "biz_msg": "still failing"}
+        }).encode()
+        fail_response.status_code = 200
+
+        mock_proxy.return_value = fail_response
+
+        result = await v0_service.delete_session("session-fail")
+
+        assert result is fail_response
 
 
 class TestStreamChatCompletion:
@@ -277,9 +362,11 @@ class TestStreamChatCompletion:
 
     @pytest.mark.asyncio
     @patch("deepseek_web_api.api.v0_service.get_pow_response")
-    async def test_stream_fails_without_pow(self, mock_get_pow, reset_parent_msg_store):
+    @patch("deepseek_web_api.api.v0_service.create_session")
+    async def test_stream_fails_without_pow(self, mock_create_session, mock_get_pow, reset_parent_msg_store):
         """Test that stream yields error when PoW fails."""
         mock_get_pow.return_value = None
+        mock_create_session.return_value = ("session-no-pow", MagicMock())
 
         chunks = []
         async for chunk in v0_service.stream_chat_completion("Hello"):

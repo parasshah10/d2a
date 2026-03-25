@@ -53,6 +53,42 @@ def save_config(cfg):
 
 CONFIG = load_config()
 
+
+def _get_server_config() -> dict:
+    return CONFIG.get("server", {})
+
+
+def _get_env_or_config(env_name: str, config_key: str, default):
+    env_value = os.getenv(env_name)
+    if env_value is not None:
+        return env_value
+    return _get_server_config().get(config_key, default)
+
+
+def _parse_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _parse_csv_or_list(value, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+        return [item for item in items if item]
+    return list(default)
+
 # ----------------------------------------------------------------------
 # (2) DeepSeek API constants
 # ----------------------------------------------------------------------
@@ -75,3 +111,62 @@ WASM_PATH = os.getenv("WASM_PATH", str(_default_wasm))
 # Log level from config (default WARNING if not set)
 _log_level_str = CONFIG.get("log_level", "WARNING").upper()
 LOG_LEVEL = getattr(logging, _log_level_str, logging.WARNING)
+
+
+def get_local_api_key() -> str:
+    """Get optional local API key for protecting this proxy service.
+
+    Environment variable takes precedence over config.toml.
+    """
+    env_key = os.getenv("DEEPSEEK_WEB_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    server_cfg = _get_server_config()
+    return str(server_cfg.get("api_key", "")).strip()
+
+
+def get_server_host() -> str:
+    return str(_get_env_or_config("DEEPSEEK_WEB_HOST", "host", "127.0.0.1")).strip()
+
+
+def get_server_port() -> int:
+    return int(_get_env_or_config("DEEPSEEK_WEB_PORT", "port", 5001))
+
+
+def get_server_reload() -> bool:
+    return _parse_bool(_get_env_or_config("DEEPSEEK_WEB_RELOAD", "reload", True), True)
+
+
+def get_cors_origins() -> list[str]:
+    return _parse_csv_or_list(
+        _get_env_or_config("DEEPSEEK_WEB_CORS_ORIGINS", "cors_origins", ["*"]),
+        ["*"],
+    )
+
+
+def get_cors_origin_regex() -> str | None:
+    value = _get_env_or_config("DEEPSEEK_WEB_CORS_ORIGIN_REGEX", "cors_origin_regex", "")
+    value = str(value).strip()
+    return value or None
+
+
+def get_cors_allow_credentials() -> bool:
+    return _parse_bool(
+        _get_env_or_config("DEEPSEEK_WEB_CORS_ALLOW_CREDENTIALS", "cors_allow_credentials", False),
+        False,
+    )
+
+
+def get_cors_allow_methods() -> list[str]:
+    return _parse_csv_or_list(
+        _get_env_or_config("DEEPSEEK_WEB_CORS_ALLOW_METHODS", "cors_allow_methods", ["*"]),
+        ["*"],
+    )
+
+
+def get_cors_allow_headers() -> list[str]:
+    return _parse_csv_or_list(
+        _get_env_or_config("DEEPSEEK_WEB_CORS_ALLOW_HEADERS", "cors_allow_headers", ["*"]),
+        ["*"],
+    )

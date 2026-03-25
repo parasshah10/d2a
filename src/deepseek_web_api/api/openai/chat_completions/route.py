@@ -30,6 +30,17 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[List[dict]] = None
 
 
+def _stream_error_chunks(message: str):
+    error_payload = {
+        "error": {
+            "message": message,
+            "type": "server_error",
+        }
+    }
+    yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """OpenAI-compatible /v1/chat/completions endpoint.
@@ -53,7 +64,7 @@ async def chat_completions(request: Request):
 
     # Model-specific overrides: reasoning model gets thinking, others don't
     thinking_enabled = "reasoner" in validated.model
-    search_enabled = False
+    search_enabled = validated.search_enabled
 
     pool = await get_pool()
 
@@ -65,7 +76,15 @@ async def chat_completions(request: Request):
         async def stream_with_pool():
             """Generator that acquires session from pool, streams, and releases."""
             for session_retry in range(_MAX_SESSION_RETRIES):
-                session = await pool.acquire()
+                try:
+                    session = await pool.acquire()
+                except Exception as e:
+                    logger.error(f"[stream] failed to acquire session: {e}")
+                    async for chunk in _emit_stream_error(
+                        f"Failed to create DeepSeek session: {type(e).__name__}"
+                    ):
+                        yield chunk
+                    return
                 logger.info(f"[stream] acquired session {session.chat_session_id[:8]}..., is_initialized={session.is_initialized}")
 
                 buffered = []
@@ -133,9 +152,15 @@ async def chat_completions(request: Request):
 
     # Non-streaming: buffer all chunks first, then return
     last_exc = None
+    chunks = []
 
     for session_retry in range(_MAX_SESSION_RETRIES):
-        session = await pool.acquire()
+        try:
+            session = await pool.acquire()
+        except Exception as e:
+            last_exc = e
+            logger.error(f"[non-stream] failed to acquire session: {e}")
+            break
         logger.info(f"[non-stream] acquired session {session.chat_session_id[:8]}..., is_initialized={session.is_initialized}")
 
         chunks = []
@@ -163,7 +188,9 @@ async def chat_completions(request: Request):
 
     # If all retries failed, raise the last exception
     if not chunks:
-        raise last_exc
+        if last_exc is not None:
+            raise last_exc
+        raise HTTPException(status_code=502, detail="DeepSeek returned no completion chunks")
 
     # Parse buffered chunks
     content_chunks = []
@@ -214,3 +241,8 @@ async def chat_completions(request: Request):
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
     )
+
+
+async def _emit_stream_error(message: str):
+    for chunk in _stream_error_chunks(message):
+        yield chunk

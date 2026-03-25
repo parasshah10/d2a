@@ -2,10 +2,19 @@
 
 import logging
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from ..core.config import (
+    get_cors_allow_credentials,
+    get_cors_allow_headers,
+    get_cors_allow_methods,
+    get_cors_origin_regex,
+    get_cors_origins,
+)
 from ..core.logger import logger
+from ..core.local_api_auth import requires_local_api_auth, verify_local_api_auth
 from fastapi.responses import StreamingResponse
 
 from .v0_service import (
@@ -22,15 +31,38 @@ from .v0_service import (
 
 logger = logging.getLogger("deepseek_web_api")
 
+
+def get_cors_middleware_options() -> dict:
+    options = {
+        "allow_origins": get_cors_origins(),
+        "allow_credentials": get_cors_allow_credentials(),
+        "allow_methods": get_cors_allow_methods(),
+        "allow_headers": get_cors_allow_headers(),
+    }
+    origin_regex = get_cors_origin_regex()
+    if origin_regex:
+        options["allow_origin_regex"] = origin_regex
+    return options
+
+
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, **get_cors_middleware_options())
+
+
+@app.middleware("http")
+async def local_api_auth_middleware(request: Request, call_next):
+    """Protect /v0 and /v1 endpoints with optional local API key auth."""
+    if requires_local_api_auth(request.url.path):
+        try:
+            verify_local_api_auth(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=getattr(exc, "headers", None),
+            )
+    return await call_next(request)
 
 
 @app.api_route("/v0/chat/completion", methods=["POST"])

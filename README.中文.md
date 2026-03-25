@@ -33,6 +33,16 @@ uv run python main.py
 运行前需要配置 `config.toml`：
 
 ```toml
+[server]
+host = "127.0.0.1"                  # 建议保持 loopback，仅本机访问
+port = 5001
+reload = true
+api_key = ""                         # 可选，本地代理鉴权 token，保护 /v0 和 /v1
+cors_origins = ["*"]                 # 建议改成明确白名单
+cors_allow_credentials = false
+cors_allow_methods = ["*"]
+cors_allow_headers = ["*"]
+
 [account]
 email = "your_email@example.com"   # 邮箱登录（优先）
 mobile = ""                        # 手机号登录（email 为空时使用）
@@ -41,7 +51,12 @@ password = "your_password"
 token = ""                         # 非必须，系统会自动管理（首次使用后保存）
 ```
 
-**安全提示**：`/v1/chat/completions` 端点默认没有设置 API Token 验证。**请务必将服务运行在 `127.0.0.1`**（`main.py` 默认值），以防止未授权访问。(或者自行修改支持Token验证)
+**安全提示**：
+- 为兼容旧用法，默认不启用本地 API 鉴权。
+- 如果设置了 `[server].api_key` 或环境变量 `DEEPSEEK_WEB_API_KEY`，所有 `/v0/*` 和 `/v1/*` 请求都必须携带 `Authorization: Bearer <token>` 或 `X-API-Key: <token>`。
+- `main.py` 现在会读取 `[server].host`、`[server].port`、`[server].reload`。
+- CORS 可通过 `[server].cors_*` 配置；为了兼容旧行为，默认仍较宽松，但面向浏览器暴露时应收紧 `cors_origins`。
+- 即便如此，仍建议只监听 `127.0.0.1`（`main.py` 默认值）。
 
 ## 模型
 
