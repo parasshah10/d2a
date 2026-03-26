@@ -21,6 +21,17 @@ from .tools import (
 )
 
 
+def _extract_complete_sse_events(buffer: str) -> tuple[list[str], str]:
+    """Extract complete SSE events from a cumulative buffer."""
+    normalized = buffer.replace("\r\n", "\n")
+    events = []
+    while "\n\n" in normalized:
+        event, normalized = normalized.split("\n\n", 1)
+        if event.strip():
+            events.append(event)
+    return events, normalized
+
+
 async def stream_generator(
     prompt: str,
     model_name: str,
@@ -78,7 +89,9 @@ async def stream_generator(
     in_tool_buffer = False
     had_tool_call = False
     force_end = False  # Flag to indicate we should stop yielding to client after tool calls
+    client_stream_closed = False
     extra_prefix = ""  # Prefetched content from edit_message nested dict format
+    sse_buffer = ""
 
     async for line in stream_func(
         prompt=prompt,
@@ -86,12 +99,11 @@ async def stream_generator(
         search_enabled=search_enabled,
         thinking_enabled=thinking_enabled,
     ):
-        # Handle bytes from proxy_to_deepseek_stream
         if isinstance(line, bytes):
             line = line.decode("utf-8")
 
-        # Split by \n\n first to separate SSE events
-        events = line.split("\n\n")
+        sse_buffer += line
+        events, sse_buffer = _extract_complete_sse_events(sse_buffer)
         for raw_event in events:
             raw_event = raw_event.strip()
             if not raw_event:
@@ -240,6 +252,7 @@ async def stream_generator(
                                         yield "data: [DONE]\n\n"
                                         logger.debug("Tool calls parsed, forcing stream end")
                                         force_end = True
+                                        client_stream_closed = True
                                 # Even if parsing failed, we still force end at [/TOOL🛠️]
                                 if force_end:
                                     # Continue consuming remaining data but don't yield to client
@@ -253,10 +266,11 @@ async def stream_generator(
                     # reasoning mode
                     yield make_chunk(reasoning=v)
 
-    # Send finish reason
-    yield make_chunk(finish_reason="tool_calls" if had_tool_call else "stop")
-    logger.debug("Yielding [DONE]")
-    yield "data: [DONE]\n\n"
+    if not client_stream_closed:
+        # Send finish reason once unless we already closed the client stream on tool_calls
+        yield make_chunk(finish_reason="tool_calls" if had_tool_call else "stop")
+        logger.debug("Yielding [DONE]")
+        yield "data: [DONE]\n\n"
 
     # Mark session as initialized after successful completion (message_id=1 now exists)
     if session and not session.is_initialized:

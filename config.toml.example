@@ -1,6 +1,16 @@
 # 日志级别: DEBUG, INFO, WARNING, ERROR
 log_level = "WARNING"
 
+[server]
+host = "127.0.0.1"  # 建议保持 loopback，仅本机访问
+port = 5001
+reload = true
+api_key = ""  # 可选，本地代理鉴权。设置后，/v0 和 /v1 请求需携带 Bearer token 或 X-API-Key
+cors_origins = ["*"]  # 生产环境建议改成明确白名单
+cors_allow_credentials = false
+cors_allow_methods = ["*"]
+cors_allow_headers = ["*"]
+
 [account]
 email = "your_email@example.com"  # 邮箱登录（优先）
 mobile = ""                        # 手机号登录（email 为空时使用）

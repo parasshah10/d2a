@@ -33,6 +33,16 @@ uv run python main.py
 `config.toml` is required before running:
 
 ```toml
+[server]
+host = "127.0.0.1"                  # Recommended: keep loopback-only
+port = 5001
+reload = true
+api_key = ""                         # Optional local API key for /v0 and /v1
+cors_origins = ["*"]                 # Recommended: replace with explicit origins for browser clients
+cors_allow_credentials = false
+cors_allow_methods = ["*"]
+cors_allow_headers = ["*"]
+
 [account]
 email = "your_email@example.com"   # Email login (priority)
 mobile = ""                        # Phone login (used when email is empty)
@@ -41,7 +51,12 @@ password = "your_password"
 token = ""                         # Optional, system will auto-manage (saved after first use)
 ```
 
-**Security**: The `/v1/chat/completions` endpoint has no API token verification by default. **Always run the service on `127.0.0.1`** (default in `main.py`) to prevent unauthorized access. (Or modify to add your own token validation)
+**Security**:
+- By default, local API auth is disabled for backwards compatibility.
+- If you set `[server].api_key` or environment variable `DEEPSEEK_WEB_API_KEY`, all `/v0/*` and `/v1/*` endpoints require either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+- `main.py` now reads `[server].host`, `[server].port`, and `[server].reload`.
+- CORS is configurable via `[server].cors_*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
+- You should still run the service on `127.0.0.1` unless you intentionally expose it.
 
 ## Models
 

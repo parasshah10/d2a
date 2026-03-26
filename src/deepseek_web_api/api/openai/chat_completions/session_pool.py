@@ -143,6 +143,19 @@ class StatelessSessionPool:
 
             for sid in to_remove:
                 del self._sessions[sid]
+
+        if to_remove:
+            from ...v0_service import delete_session as delete_remote_session
+
+            for sid in to_remove:
+                try:
+                    resp = await delete_remote_session(sid)
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            f"[pool] remote cleanup for session {sid[:8]}... returned {resp.status_code}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[pool] failed to delete remote session {sid[:8]}...: {e}")
                 removed += 1
                 logger.info(f"[pool] removed idle session {sid[:8]}...")
 

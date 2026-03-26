@@ -101,7 +101,10 @@ class TestStatelessSessionPool:
         assert session.last_access_time >= original_time
 
     @pytest.mark.asyncio
-    async def test_cleanup_idle_removes_old_sessions(self, pool):
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_idle_removes_old_sessions(self, mock_delete_session, pool):
+        mock_delete_session.return_value.status_code = 200
+
         old_session = StatelessSession(chat_session_id="old-session")
         old_session.last_access_time = time.time() - 100
         pool._sessions["old-session"] = old_session
@@ -113,9 +116,11 @@ class TestStatelessSessionPool:
         assert removed == 1
         assert "old-session" not in pool._sessions
         assert "new-session" in pool._sessions
+        mock_delete_session.assert_awaited_once_with("old-session")
 
     @pytest.mark.asyncio
-    async def test_cleanup_does_not_remove_locked_sessions(self, pool):
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_does_not_remove_locked_sessions(self, mock_delete_session, pool):
         session = StatelessSession(chat_session_id="locked-session")
         await session.lock.acquire()
         session.last_access_time = time.time() - 100
@@ -124,11 +129,14 @@ class TestStatelessSessionPool:
         removed = await pool.cleanup_idle()
         assert removed == 0
         assert "locked-session" in pool._sessions
+        mock_delete_session.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_cleanup_idle_empty_pool(self, pool):
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_idle_empty_pool(self, mock_delete_session, pool):
         removed = await pool.cleanup_idle()
         assert removed == 0
+        mock_delete_session.assert_not_awaited()
 
     def test_size_property(self, pool):
         pool._sessions["a"] = StatelessSession(chat_session_id="a")
@@ -181,8 +189,11 @@ class TestStatelessSessionPool:
         assert pool._cleanup_task is None
 
     @pytest.mark.asyncio
-    async def test_cleanup_loop_removes_idle_sessions(self, pool):
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_loop_removes_idle_sessions(self, mock_delete_session, pool):
         """Test that the cleanup loop actually removes idle sessions."""
+        mock_delete_session.return_value.status_code = 200
+
         # Add a session that will be considered idle
         old_session = StatelessSession(chat_session_id="old-session")
         old_session.last_access_time = time.time() - 100
@@ -199,9 +210,11 @@ class TestStatelessSessionPool:
 
         # Session should be removed
         assert "old-session" not in pool._sessions
+        mock_delete_session.assert_awaited_once_with("old-session")
 
     @pytest.mark.asyncio
-    async def test_cleanup_loop_keeps_active_sessions(self, pool):
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_loop_keeps_active_sessions(self, mock_delete_session, pool):
         """Test that the cleanup loop does not remove active sessions."""
         # Add an active session (recently accessed)
         active_session = StatelessSession(chat_session_id="active-session")
@@ -217,6 +230,22 @@ class TestStatelessSessionPool:
 
         # Active session should still be there
         assert "active-session" in pool._sessions
+        mock_delete_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("deepseek_web_api.api.v0_service.delete_session", new_callable=AsyncMock)
+    async def test_cleanup_idle_logs_remote_delete_failures_but_still_removes(self, mock_delete_session, pool):
+        mock_delete_session.side_effect = RuntimeError("cleanup failed")
+
+        old_session = StatelessSession(chat_session_id="old-session")
+        old_session.last_access_time = time.time() - 100
+        pool._sessions["old-session"] = old_session
+
+        removed = await pool.cleanup_idle()
+
+        assert removed == 1
+        assert "old-session" not in pool._sessions
+        mock_delete_session.assert_awaited_once_with("old-session")
 
 
 class TestGetPool:
