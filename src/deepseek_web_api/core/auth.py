@@ -100,10 +100,10 @@ def invalidate_token():
     try:
         from .config import CONFIG as current_config
         if current_config.get("account"):
-            new_config = current_config.copy()
-            new_config["account"] = new_config["account"].copy()
-            new_config["account"].pop("token", None)
-            save_config(new_config)
+            # Clear token from in-memory CONFIG ( critical for concurrent tests)
+            current_config["account"].pop("token", None)
+            # Save updated config to file
+            save_config(current_config)
             logger.debug("[invalidate_token] Token invalidated in config")
     except Exception as e:
         logger.warning(f"[invalidate_token] Failed to clear token from config: {e}")

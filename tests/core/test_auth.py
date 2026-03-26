@@ -3,8 +3,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-import sys
-sys.path.insert(0, "src")
 
 from deepseek_web_api.core import auth
 

@@ -1,11 +1,9 @@
 """Unit tests for service.py - stream generation service."""
 
 import json
-import sys
 
 import pytest
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api.api.openai.chat_completions.service import (
     _extract_complete_sse_events,

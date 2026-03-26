@@ -5,8 +5,6 @@ Run with: pytest tests/smoke/ -v -s
 """
 
 import pytest
-import sys
-sys.path.insert(0, "src")
 
 # Don't import at module level to avoid triggering init
 # Tests will import what they need

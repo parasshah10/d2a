@@ -1,13 +1,11 @@
 """Unit tests for session_pool.py - stateless session pool."""
 
 import asyncio
-import sys
 import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api.api.openai.chat_completions.session_pool import (
     StatelessSession,

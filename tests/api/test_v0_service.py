@@ -5,12 +5,10 @@ Run with: pytest tests/api/test_v0_service.py -v
 """
 
 import json
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api.api import v0_service
 

@@ -5,8 +5,6 @@ from unittest.mock import patch, MagicMock
 import json
 import base64
 
-import sys
-sys.path.insert(0, "src")
 
 from deepseek_web_api.core import pow as pow_module
 

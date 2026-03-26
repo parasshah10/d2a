@@ -1,8 +1,6 @@
 """Tests for startup security warnings."""
 
-import sys
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api.core import server_security
 

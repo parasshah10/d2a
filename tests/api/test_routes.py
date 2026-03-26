@@ -1,11 +1,9 @@
 """Tests for API route-level middleware and auth behavior."""
 
-import sys
 
 from fastapi.testclient import TestClient
 import pytest
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api import app
 from deepseek_web_api.api import routes

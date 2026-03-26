@@ -6,11 +6,9 @@ the complete v0_service layer end-to-end.
 Run with: pytest tests/smoke/test_v0_api.py -v -s
 """
 
-import sys
 
 import pytest
 
-sys.path.insert(0, "src")
 
 
 class TestV0ApiSmoke:

@@ -3,8 +3,6 @@
 import pytest
 import asyncio
 
-import sys
-sys.path.insert(0, "src")
 
 from deepseek_web_api.core import ParentMsgStore
 

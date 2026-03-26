@@ -1,12 +1,10 @@
 """Unit tests for chat_completions route behavior."""
 
 import json
-import sys
 
 from fastapi.testclient import TestClient
 import pytest
 
-sys.path.insert(0, "src")
 
 from deepseek_web_api import app
 from deepseek_web_api.api.openai.chat_completions.session_pool import StatelessSession
