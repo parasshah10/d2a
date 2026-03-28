@@ -4,19 +4,31 @@ import base64
 import ctypes
 import json
 import logging
+import pathlib
 import struct
 import threading
+import urllib.request
 
 from curl_cffi import requests
 from wasmtime import Engine, Linker, Module, Store
 
-from .config import DEEPSEEK_CREATE_POW_URL, DEFAULT_IMPERSONATE, WASM_PATH
+from .config import DEEPSEEK_CREATE_POW_URL, DEFAULT_IMPERSONATE, get_wasm_url, get_wasm_path
 
 logger = logging.getLogger(__name__)
 
-# Cached WASM module and runtime - compiled once at first use
 _wasm_cache: dict[str, tuple[Engine, Linker, Module, Store]] = {}
 _cache_lock = threading.Lock()
+
+
+def _ensure_wasm():
+    wasm_path = pathlib.Path(get_wasm_path())
+    if wasm_path.exists():
+        return
+    url = get_wasm_url()
+    logger.warning(f"[WASM] File not found at {wasm_path}, downloading from {url}")
+    wasm_path.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(url, wasm_path)
+    logger.info(f"[WASM] Downloaded to {wasm_path}")
 
 
 def _get_cached_wasm(wasm_path: str) -> tuple[Engine, Linker, Module, Store]:
@@ -24,6 +36,7 @@ def _get_cached_wasm(wasm_path: str) -> tuple[Engine, Linker, Module, Store]:
     if wasm_path not in _wasm_cache:
         with _cache_lock:
             if wasm_path not in _wasm_cache:
+                _ensure_wasm()
                 logger.debug(f"[WASM] Loading module from {wasm_path}")
                 try:
                     with open(wasm_path, "rb") as f:
@@ -49,7 +62,7 @@ def compute_pow_answer(
     salt: str,
     difficulty: int,
     expire_at: int,
-    wasm_path: str = WASM_PATH,
+    wasm_path: str | None = None,
 ) -> int | None:
     """
     Compute DeepSeekHash answer using WASM module.
@@ -60,6 +73,9 @@ def compute_pow_answer(
       - Read status and result from wasm memory
       - If status is 0, return None; otherwise return integer answer
     """
+    if wasm_path is None:
+        wasm_path = get_wasm_path()
+
     if algorithm != "DeepSeekHashV1":
         raise ValueError(f"Unsupported algorithm: {algorithm}")
 
