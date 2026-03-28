@@ -36,5 +36,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Prepare config
+        run: cp config.toml.example config.toml
+
       - name: Run unit tests
         run: uv run pytest tests/api tests/core -v
