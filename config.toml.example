@@ -1,6 +1,5 @@
 # Docker 封装预留路径（通过环境变量覆盖）：
 # CONFIG_PATH: 配置文件路径，默认 config.toml
-# WASM_PATH:   WASM 模块路径，默认 core/ 下同目录文件
 
 # 日志级别: DEBUG, INFO, WARNING, ERROR
 log_level = "WARNING"
@@ -45,3 +44,8 @@ accept-charset = "UTF-8"
 # 浏览器伪装
 [browser]
 impersonate = "safari15_3"  # safari15_3, chrome110, etc.
+
+# WASM PoW 模块（首次运行时自动下载）
+[wasm]
+url = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
+path = "core/deepseek.wasm"

@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import pathlib
 
 try:
     import tomllib as toml
@@ -94,12 +93,10 @@ DEEPSEEK_CREATE_POW_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/create_pow_chall
 BASE_HEADERS = CONFIG.get("headers", {})
 
 # HTTP request impersonation (browser signature for anti-bot)
-# Can be in [browser.impersonate] or root level impersonate
 DEFAULT_IMPERSONATE = CONFIG.get("browser", {}).get("impersonate") or CONFIG.get("impersonate", "")
 
-# WASM module file path (relative to core module, or absolute)
-_default_wasm = pathlib.Path(__file__).parent / "sha3_wasm_bg.7b9ca65ddd.wasm"
-WASM_PATH = os.getenv("WASM_PATH", str(_default_wasm))
+_DEFAULT_WASM_URL = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
+_DEFAULT_WASM_PATH = "core/deepseek.wasm"
 
 # Log level from config (default WARNING if not set)
 _log_level_str = CONFIG.get("log_level", "WARNING").upper()
@@ -171,3 +168,11 @@ def get_cors_allow_headers() -> list[str]:
         _get_server_config().get("cors_allow_headers", ["*"]),
         ["*"],
     )
+
+
+def get_wasm_url() -> str:
+    return CONFIG.get("wasm", {}).get("url") or _DEFAULT_WASM_URL
+
+
+def get_wasm_path() -> str:
+    return CONFIG.get("wasm", {}).get("path") or _DEFAULT_WASM_PATH
