@@ -39,12 +39,17 @@ uv run python main.py
 host = "127.0.0.1"                  # Recommended: keep loopback-only
 port = 5001
 reload = true
-cors_origins = ["*"]                 # Recommended: replace with explicit origins for browser clients
-cors_allow_credentials = false
-cors_allow_methods = ["*"]
-cors_allow_headers = ["*"]
-pool_size = 10                       # Max concurrent DeepSeek sessions; requests wait when at capacity, 503 on timeout
-pool_acquire_timeout = 30.0           # Seconds to wait for a free session before returning 503
+
+[cors]
+origins = ["*"]                     # Recommended: replace with explicit origins for browser clients
+allow_credentials = false
+allow_methods = ["*"]
+allow_headers = ["*"]
+
+[session_pool]
+pool_size = 10                      # Max concurrent DeepSeek sessions; requests wait when at capacity, 503 on timeout
+pool_acquire_timeout = 30.0         # Seconds to wait for a free session before returning 503
+max_idle_seconds = 300.0           # Idle session cleanup threshold (configurable)
 
 [auth]
 tokens = []                          # Configure one or more tokens to enable auth
@@ -69,7 +74,7 @@ token = ""                         # Optional, system will auto-manage (saved af
 - `[auth].tokens` is a simple string array. Non-empty array means auth is required; empty array means anonymous access (only safe for loopback).
 - If at least one token is configured, all `/v0/*` and `/v1/*` endpoints require either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 - **Fail-fast protection**: If `[server].host` is non-loopback (e.g., `0.0.0.0`) and `[auth].tokens` is empty, the server will refuse to start.
-- CORS is configurable via `[server].cors_*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
+- CORS is configurable via `[cors].*`. The default remains permissive for compatibility, but you should narrow `cors_origins` before exposing browser clients.
 - You should still run the service on `127.0.0.1` unless you intentionally expose it.
 
 ## Models
@@ -257,7 +262,7 @@ Implements stateless sessions via `edit_message` API:
 **Session Pool**:
 - Maintains a bounded pool of DeepSeek sessions (`pool_size`, default 10)
 - When all sessions are busy, new requests wait up to `pool_acquire_timeout` seconds (default 30s) before returning HTTP 503
-- Idle sessions are cleaned up automatically every `max_idle_seconds/2` (default 150s, configurable via `max_idle_seconds` in `[server]`)
+- Idle sessions are cleaned up automatically every `max_idle_seconds/2` (default 150s, configurable via `max_idle_seconds` in `[session_pool]`)
 - Hard cap prevents flooding DeepSeek with unbounded concurrent session creations
 
 **Rate Limit Handling**:
