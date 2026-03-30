@@ -3,6 +3,7 @@
 Converts DeepSeek SSE responses to OpenAI SSE format.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -21,6 +22,8 @@ from .tools import (
 )
 
 _UNSET_USAGE = object()
+
+TOOL_BUFFER_TIMEOUT = 3.0  # seconds of silence before forcing end in tool buffer mode
 
 
 def _flush_with_stop(buffer: str, stop_sequences: list[str]) -> tuple[str, bool]:
@@ -133,15 +136,46 @@ async def stream_generator(
 
     yield make_chunk(role="assistant", usage=include_usage if include_usage else _UNSET_USAGE)
 
-    async for line in stream_func(
+    # Wrap the async iterator with per-chunk timeout
+    iterable = stream_func(
         prompt=prompt,
         chat_session_id=session.chat_session_id if session else None,
         search_enabled=search_enabled,
         thinking_enabled=thinking_enabled,
-    ):
+    )
+    ait = iterable.__aiter__()
+    while True:
+        try:
+            line = await asyncio.wait_for(ait.__anext__(), timeout=TOOL_BUFFER_TIMEOUT)
+        except asyncio.TimeoutError:
+            # 3s elapsed with no chunk — force stream end
+            logger.warning("[stream] tool buffer timeout, forcing end")
+            if in_stream_buffer and stream_buff:
+                end_idx = stream_buff.find(TOOL_END_MARKER)
+                json_start_idx = stream_buff.find(TOOL_START_MARKER)
+                if end_idx != -1 and json_start_idx != -1 and end_idx > json_start_idx:
+                    json_str = stream_buff[json_start_idx + len(TOOL_START_MARKER):end_idx]
+                    tool_calls_result = convert_tool_json_to_openai(json_str, tools)
+                    if tool_calls_result:
+                        for tc in tool_calls_result:
+                            yield make_chunk(tool_calls=[tc], usage=include_usage if include_usage else _UNSET_USAGE)
+                # Yield remaining content after end marker (if any)
+                after_end = stream_buff[end_idx + len(TOOL_END_MARKER):] if end_idx != -1 else stream_buff
+                if after_end:
+                    to_yield, stopped = _flush_with_stop(after_end, stop_sequences or [])
+                    if to_yield:
+                        yield make_chunk(content=to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
+            yield make_chunk(finish_reason="tool_calls" if had_tool_call else "stop",
+                             usage=include_usage if include_usage else _UNSET_USAGE)
+            if include_usage:
+                yield make_chunk(usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, final=True)
+            yield "data: [DONE]\n\n"
+            break
+        except StopAsyncIteration:
+            break
+
         if isinstance(line, bytes):
             line = line.decode("utf-8")
-
         sse_buffer += line
         events, sse_buffer = _extract_complete_sse_events(sse_buffer)
         for raw_event in events:
@@ -179,8 +213,7 @@ async def stream_generator(
                     if extra_prefix:
                         prefix_to_yield, stopped = _flush_with_stop(extra_prefix, stop_sequences or [])
                         if prefix_to_yield:
-                            for char in prefix_to_yield:
-                                yield make_chunk(content=char, usage=include_usage if include_usage else _UNSET_USAGE)
+                            yield make_chunk(content=prefix_to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
                         if stopped:
                             force_end = True
                         extra_prefix = ""
@@ -199,16 +232,14 @@ async def stream_generator(
                         after_end = stream_buff[end_idx + len(TOOL_END_MARKER):]
                         to_yield, stopped = _flush_with_stop(after_end, stop_sequences or [])
                         if to_yield:
-                            for char in to_yield:
-                                yield make_chunk(content=char, usage=include_usage if include_usage else _UNSET_USAGE)
+                            yield make_chunk(content=to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
                         if stopped:
                             force_end = True
                     elif stream_buff:
                         # Not in buffer mode but have remaining content - flush it
                         to_yield, stopped = _flush_with_stop(stream_buff, stop_sequences or [])
                         if to_yield:
-                            for char in to_yield:
-                                yield make_chunk(content=char, usage=include_usage if include_usage else _UNSET_USAGE)
+                            yield make_chunk(content=to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
                         if stopped:
                             force_end = True
                     break
@@ -276,8 +307,7 @@ async def stream_generator(
                                 before_start = stream_buff[:start_idx]
                                 to_yield, stopped = _flush_with_stop(before_start, stop_sequences or [])
                                 if to_yield:
-                                    for char in to_yield:
-                                        yield make_chunk(content=char, usage=include_usage if include_usage else _UNSET_USAGE)
+                                    yield make_chunk(content=to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
                                 if stopped:
                                     force_end = True
                                 # Keep only from start marker onwards in buffer
@@ -290,8 +320,7 @@ async def stream_generator(
                                     fallen = stream_buff[:-buffer_window]
                                     to_yield, stopped = _flush_with_stop(fallen, stop_sequences or [])
                                     if to_yield:
-                                        for char in to_yield:
-                                            yield make_chunk(content=char, usage=include_usage if include_usage else _UNSET_USAGE)
+                                        yield make_chunk(content=to_yield, usage=include_usage if include_usage else _UNSET_USAGE)
                                     if stopped:
                                         force_end = True
                                 stream_buff = stream_buff[-buffer_window:]

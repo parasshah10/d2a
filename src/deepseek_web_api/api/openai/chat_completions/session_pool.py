@@ -32,17 +32,11 @@ class StatelessSession:
     chat_session_id: str
     is_initialized: bool = False
     last_access_time: float = field(default_factory=time.time)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    lock: asyncio.Lock = field(default_factory=lambda: asyncio.Lock())
 
 
 class SessionPoolError(Exception):
     """Base exception for session pool errors."""
-
-    pass
-
-
-class AllSessionsBusyError(SessionPoolError):
-    """Raised when all sessions in the pool are locked/busy."""
 
     pass
 

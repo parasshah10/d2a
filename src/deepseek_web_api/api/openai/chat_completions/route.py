@@ -144,14 +144,17 @@ async def chat_completions(request: Request):
                             # This avoids sending partial SSL/writes - if an error occurs
                             # before reaching the threshold, buffered content is discarded
                             # (it may be incomplete/corrupted). Once threshold is reached,
-                            # we assume the connection is stable and yield chunks directly.
+                            # we enter sliding window mode: each new chunk yields the oldest
+                            # buffered chunk. This prevents force_end truncation from being
+                            # violated by a bulk flush.
                             if len(buffered) >= STREAM_BUFFER_THRESHOLD:
-                                for b in buffered:
-                                    yield b
-                                buffered.clear()
                                 started_yielding = True
                         else:
-                            yield chunk
+                            # Sliding window: yield oldest buffered chunk, append new to buffer
+                            if len(buffered) >= STREAM_BUFFER_THRESHOLD:
+                                oldest = buffered.pop(0)
+                                yield oldest
+                            buffered.append(chunk)
                     success = True
                     logger.info(f"[stream] session {session.chat_session_id[:8]}... completed successfully")
                     # Stream completed successfully - flush any remaining buffered chunks
