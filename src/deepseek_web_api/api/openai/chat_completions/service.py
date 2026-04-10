@@ -258,7 +258,7 @@ async def stream_generator(
                     # Still need to set current_mode based on p even for dict v
                     if p and "thinking_content" in p:
                         current_mode = "reasoning"
-                    elif p and "content" in p:
+                    elif p and "content" in p and "fragments" not in p:
                         current_mode = "output"
                     extracted = None
                     if "response" in v:
@@ -267,8 +267,15 @@ async def stream_generator(
                             fragments = resp["fragments"]
                             if isinstance(fragments, list) and fragments:
                                 first_fragment = fragments[0]
-                                if isinstance(first_fragment, dict) and "content" in first_fragment:
-                                    extracted = str(first_fragment["content"])
+                                if isinstance(first_fragment, dict):
+                                    # Detect mode from fragment type (expert/completion format)
+                                    frag_type = first_fragment.get("type", "")
+                                    if frag_type == "THINK":
+                                        current_mode = "reasoning"
+                                    elif frag_type in ("RESPONSE", "TEXT"):
+                                        current_mode = "output"
+                                    if "content" in first_fragment:
+                                        extracted = str(first_fragment["content"])
                         elif isinstance(resp, dict) and "content" in resp:
                             extracted = str(resp["content"])
                     if extracted:
@@ -276,13 +283,39 @@ async def stream_generator(
                         logger.debug(f"Prefetched extra_prefix={repr(extra_prefix)}")
                     continue
 
+                # Handle fragment APPEND events (list v): signals mode switch + carries initial content
+                if isinstance(v, list) and p == "response/fragments" and not force_end:
+                    for frag in v:
+                        if not isinstance(frag, dict):
+                            continue
+                        frag_type = frag.get("type", "")
+                        if frag_type == "THINK":
+                            current_mode = "reasoning"
+                        elif frag_type in ("RESPONSE", "TEXT"):
+                            current_mode = "output"
+                        initial = str(frag.get("content") or "")
+                        if initial and current_mode is not None:
+                            if extra_prefix:
+                                initial = extra_prefix + initial
+                                extra_prefix = ""
+                            if current_mode == "output":
+                                if tools:
+                                    tool_buff += initial
+                                else:
+                                    yield make_chunk(content=initial)
+                            else:
+                                yield make_chunk(reasoning=initial)
+                        break
+                    continue
+
                 if not isinstance(v, str) or v == "SEARCHING":
                     continue
 
                 # Switch mode based on p field (use "in" for flexible matching)
+                # Exclude fragment paths to avoid overriding mode set by fragment type detection
                 if p and "thinking_content" in p:
                     current_mode = "reasoning"
-                elif p and "content" in p:
+                elif p and "content" in p and "fragments" not in p:
                     current_mode = "output"
 
                 # Ignore if no mode set yet (initial state)
