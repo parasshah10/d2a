@@ -9,3 +9,7 @@ check:
 # Run ds_core_cli example
 ds-core-cli *ARGS:
   cargo run --example ds_core_cli -- {{ARGS}}
+
+# Run openai_adapter/request submodule tests
+test-adapter-request *ARGS:
+  cargo test openai_adapter::request::tests -- {{ARGS}}

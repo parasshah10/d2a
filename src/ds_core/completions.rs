@@ -12,6 +12,7 @@ use crate::ds_core::accounts::{AccountGuard, AccountPool};
 use crate::ds_core::client::{DsClient, EditMessagePayload};
 use crate::ds_core::pow::PowSolver;
 
+#[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub prompt: String,
     pub thinking_enabled: bool,
