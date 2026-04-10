@@ -67,6 +67,7 @@ async def stream_generator(
     session: "StatelessSession" = None,
     stop_sequences: Optional[List[str]] = None,
     include_usage: bool = False,
+    model_type: str = "default",
 ):
     """Stream DeepSeek SSE and convert to OpenAI SSE format.
 
@@ -142,6 +143,7 @@ async def stream_generator(
         chat_session_id=session.chat_session_id if session else None,
         search_enabled=search_enabled,
         thinking_enabled=thinking_enabled,
+        model_type=model_type,
     )
     ait = iterable.__aiter__()
     while True:
