@@ -239,6 +239,16 @@ DEEPSEEK_CREATE_POW_URL = f"https://{DEEPSEEK_HOST}/api/v0/chat/create_pow_chall
 # WASM module file path (relative to core module, or absolute)
 _default_wasm = pathlib.Path(__file__).parent / "sha3_wasm_bg.7b9ca65ddd.wasm"
 WASM_PATH = os.getenv("WASM_PATH", str(_default_wasm))
+_DEFAULT_WASM_URL = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
+_DEFAULT_WASM_PATH = "core/deepseek.wasm"
+
+
+def get_wasm_url() -> str:
+    return CONFIG.get("wasm", {}).get("url") or _DEFAULT_WASM_URL
+
+
+def get_wasm_path() -> str:
+    return CONFIG.get("wasm", {}).get("path") or _DEFAULT_WASM_PATH
 
 # Log level from config (default WARNING if not set)
 _log_level_str = CONFIG.get("log_level", "WARNING").upper()
