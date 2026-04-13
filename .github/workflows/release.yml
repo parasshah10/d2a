@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -28,7 +28,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain-file: rust-toolchain.toml
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -71,7 +71,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain-file: rust-toolchain.toml
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -116,7 +116,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain-file: rust-toolchain.toml
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -152,7 +152,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain-file: rust-toolchain.toml
+          toolchain: "1.94.1"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
