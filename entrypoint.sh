@@ -1,33 +1,14 @@
 #!/bin/sh  
 set -e  
   
-# ── Server config ─────────────────────────────────────────────────────────────  
 cat > /config.toml <<EOF  
 [server]  
 host = "0.0.0.0"  
 port = 7860  
 EOF  
   
-# Optional: protect the API with a token  
-# Set HF Secret: API_TOKEN=sk-something  
-if [ -n "$API_TOKEN" ]; then  
-    cat >> /config.toml <<EOF  
-  
-[[server.api_tokens]]  
-token = "${API_TOKEN}"  
-description = "hf-space"  
-EOF  
-fi  
-  
-# ── Accounts ──────────────────────────────────────────────────────────────────  
-# Add accounts via numbered HF Secrets:  
-#   DS_EMAIL_1, DS_PASSWORD_1  
-#   DS_EMAIL_2, DS_PASSWORD_2  ... and so on  
-#  
-# For phone login instead of email:  
-#   DS_MOBILE_1, DS_AREA_CODE_1, DS_PASSWORD_1  
-  
 i=1  
+ACCOUNT_COUNT=0  
 while true; do  
     eval "password=\${DS_PASSWORD_$i}"  
     [ -z "$password" ] && break  
@@ -44,8 +25,19 @@ mobile = "${mobile}"
 area_code = "${area_code}"  
 password = "${password}"  
 EOF  
+    ACCOUNT_COUNT=$((ACCOUNT_COUNT + 1))  
     i=$((i + 1))  
 done  
   
-# ── Start ─────────────────────────────────────────────────────────────────────  
+echo "[entrypoint] Generated config with ${ACCOUNT_COUNT} account(s)"  
+echo "[entrypoint] Server: 0.0.0.0:7860"  
+  
+if [ "$ACCOUNT_COUNT" -eq 0 ]; then  
+    echo "[entrypoint] ERROR: No accounts configured. Set DS_EMAIL_1 and DS_PASSWORD_1 secrets in HF Space settings."  
+    exit 1  
+fi  
+  
+# Enable debug logging from the binary  
+export RUST_LOG=info  
+  
 exec /usr/local/bin/ds-free-api -c /config.toml
