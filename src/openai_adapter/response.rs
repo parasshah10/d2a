@@ -17,10 +17,14 @@ use futures::{Stream, StreamExt};
 use log::debug;
 use pin_project_lite::pin_project;
 use rand::RngExt;
+use std::future::Future;
+use std::sync::Arc;
 
 use crate::openai_adapter::{
     OpenAIAdapterError, StreamResponse,
-    types::{ChatCompletion, ChatCompletionChunk, Choice, MessageResponse},
+    types::{
+        ChatCompletion, ChatCompletionChunk, Choice, Delta, MessageResponse, ToolCall, Usage,
+    },
 };
 
 static CHATCMPL_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -75,6 +79,170 @@ fn chunk_to_bytes(
 
 fn find_stop_pos(content: &str, stop: &[String]) -> Option<usize> {
     stop.iter().filter_map(|s| content.find(s)).min()
+}
+
+/// RepairStream 内部使用的流类型
+type ChunkStream =
+    Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>>;
+
+/// 工具调用修复闭包类型
+pub type RepairFn = Arc<
+    dyn Fn(
+            String,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Vec<ToolCall>, OpenAIAdapterError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// 执行 tool_calls 修复：将 ds_core 字节流解析后提取文本，转换为结构化 ToolCall
+pub(crate) async fn execute_tool_repair(
+    ds_stream: Pin<Box<dyn Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send>>,
+) -> Result<Vec<ToolCall>, OpenAIAdapterError> {
+    let sse = sse_parser::SseStream::new(ds_stream);
+    let state_stream = state::StateStream::new(sse);
+    futures::pin_mut!(state_stream);
+
+    let mut text = String::new();
+    while let Some(frame) = state_stream.next().await {
+        if let state::DsFrame::ContentDelta(t) = frame? {
+            text.push_str(&t);
+            if text.len() > tool_parser::MAX_XML_BUF_LEN {
+                return Err(OpenAIAdapterError::Internal(
+                    "修复模型输出过长，放弃修复".into(),
+                ));
+            }
+        }
+    }
+
+    let wrapped = if text.contains("<tool_calls>") {
+        text.trim().to_string()
+    } else {
+        format!("<tool_calls>{}</tool_calls>", text.trim())
+    };
+
+    let (calls, _) = tool_parser::parse_tool_calls(&wrapped).ok_or_else(|| {
+        OpenAIAdapterError::Internal(format!(
+            "修复模型返回无法解析为工具调用: {}",
+            &text[..text.len().min(200)]
+        ))
+    })?;
+
+    Ok(calls)
+}
+
+enum RepairState {
+    Forwarding,
+    Repairing {
+        future: Pin<Box<dyn Future<Output = Result<Vec<ToolCall>, OpenAIAdapterError>> + Send>>,
+    },
+    RepairFailed(String),
+    Done,
+}
+
+pin_project! {
+    /// 工具调用修复流：在 ToolCallStream 之后、StopStream 之前
+    ///
+    /// 当 ToolCallStream 返回 Err(ToolCallRepairNeeded) 时，
+    /// 丢弃上游流（释放账号），通过 repair_fn 发起修复请求，
+    /// 将修复后的 tool_calls 发送给客户端。
+    struct RepairStream {
+        #[pin]
+        inner: Option<ChunkStream>,
+        repair_fn: Option<RepairFn>,
+        state: RepairState,
+        model: String,
+    }
+}
+
+impl RepairStream {
+    fn new(inner: ChunkStream, repair_fn: RepairFn, model: String) -> Self {
+        Self {
+            inner: Some(inner),
+            repair_fn: Some(repair_fn),
+            state: RepairState::Forwarding,
+            model,
+        }
+    }
+}
+
+impl Stream for RepairStream {
+    type Item = Result<ChatCompletionChunk, OpenAIAdapterError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            match this.state {
+                RepairState::Forwarding => {
+                    match this.inner.as_mut().as_pin_mut().map(|p| p.poll_next(cx)) {
+                        Some(Poll::Ready(Some(Ok(chunk)))) => {
+                            return Poll::Ready(Some(Ok(chunk)));
+                        }
+                        Some(Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(
+                            raw_xml,
+                        ))))) => {
+                            debug!(
+                                target: "adapter",
+                                "RepairStream 捕获修复请求: len={}",
+                                raw_xml.len()
+                            );
+                            drop(this.inner.as_mut().get_mut().take());
+                            if let Some(f) = this.repair_fn.take() {
+                                let future = f(raw_xml);
+                                *this.state = RepairState::Repairing { future };
+                            } else {
+                                *this.state =
+                                    RepairState::RepairFailed("no repair function".into());
+                            }
+                            continue;
+                        }
+                        Some(Poll::Ready(Some(Err(e)))) => {
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                        Some(Poll::Ready(None)) | None => {
+                            return Poll::Ready(None);
+                        }
+                        Some(Poll::Pending) => {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+
+                RepairState::Repairing { future } => match future.as_mut().poll(cx) {
+                    Poll::Ready(Ok(calls)) => {
+                        debug!(
+                            target: "adapter",
+                            "tool_calls 修复成功: {} 个工具调用",
+                            calls.len()
+                        );
+                        *this.state = RepairState::Done;
+                        return Poll::Ready(Some(Ok(converter::make_chunk(
+                            this.model,
+                            Delta {
+                                tool_calls: Some(calls),
+                                ..Default::default()
+                            },
+                            Some(FINISH_TOOL_CALLS),
+                        ))));
+                    }
+                    Poll::Ready(Err(e)) => {
+                        debug!(target: "adapter", "tool_calls 修复失败: {}", e);
+                        *this.state = RepairState::RepairFailed(format!("修复失败: {}", e));
+                        continue;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+
+                RepairState::RepairFailed(msg) => {
+                    let msg = std::mem::take(msg);
+                    return Poll::Ready(Some(Err(OpenAIAdapterError::Internal(msg))));
+                }
+
+                RepairState::Done => return Poll::Ready(None),
+            }
+        }
+    }
 }
 
 pin_project! {
@@ -159,14 +327,15 @@ pub(crate) fn stream<S>(
     include_obfuscation: bool,
     stop: Vec<String>,
     prompt_tokens: u32,
+    repair_fn: Option<RepairFn>,
 ) -> StreamResponse
 where
     S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send + 'static,
 {
     debug!(
         target: "adapter",
-        "构建流式响应: model={}, include_usage={}, include_obfuscation={}, stop_count={}",
-        model, include_usage, include_obfuscation, stop.len()
+        "构建流式响应: model={}, include_usage={}, include_obfuscation={}, stop_count={}, repair={}",
+        model, include_usage, include_obfuscation, stop.len(), repair_fn.is_some()
     );
     let sse = sse_parser::SseStream::new(ds_stream);
     let state_stream = state::StateStream::new(sse);
@@ -177,9 +346,21 @@ where
         include_obfuscation,
         prompt_tokens,
     );
-    let tool_parsed = tool_parser::ToolCallStream::new(converted, model);
+    let tool_parsed = tool_parser::ToolCallStream::new(converted, model.clone());
+    let tool_boxed: Pin<
+        Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>,
+    > = Box::pin(tool_parsed);
+
+    let after_repair: Pin<
+        Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>,
+    > = if let Some(f) = repair_fn {
+        Box::pin(RepairStream::new(tool_boxed, f, model))
+    } else {
+        tool_boxed
+    };
+
     let stop_stream = StopStream {
-        inner: tool_parsed,
+        inner: after_repair,
         stop,
         stopped: false,
         sent_len: 0,
@@ -189,7 +370,7 @@ where
     Box::pin(stop_stream)
 }
 
-/// 非流式响应：聚合 SSE 流为单个 ChatCompletion JSON
+/// 非流式响应：复用 stream() 逻辑，收齐 SSE 事件后组装单条 ChatCompletion JSON
 pub(crate) async fn aggregate<S>(
     ds_stream: S,
     model: String,
@@ -197,93 +378,108 @@ pub(crate) async fn aggregate<S>(
     prompt_tokens: u32,
 ) -> Result<Vec<u8>, OpenAIAdapterError>
 where
-    S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send,
+    S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send + 'static,
 {
-    debug!(target: "adapter", "构建非流式响应: model={}, stop_count={}", model, stop.len());
-    let sse = sse_parser::SseStream::new(ds_stream);
-    let state_stream = state::StateStream::new(sse);
-    let converted =
-        converter::ConverterStream::new(state_stream, model.clone(), true, false, prompt_tokens);
+    use serde_json::Value;
 
+    debug!(target: "adapter", "构建非流式响应: model={}, stop_count={}", model, stop.len());
+    let bytes_stream = stream(
+        ds_stream,
+        model.clone(),
+        true,  // include_usage
+        false, // include_obfuscation
+        stop,
+        prompt_tokens,
+        None, // repair_fn — 非流式暂不修复
+    );
+    futures::pin_mut!(bytes_stream);
+
+    let mut id = String::new();
+    let mut created = 0u64;
     let mut content = String::new();
     let mut reasoning = String::new();
+    let mut tool_calls: Option<Vec<ToolCall>> = None;
     let mut usage = None;
-    let mut finish_reason = None;
+    let mut finish_reason: Option<&'static str> = None;
 
-    futures::pin_mut!(converted);
-    while let Some(res) = converted.next().await {
-        let chunk = res?;
-        if let Some(u) = chunk.usage {
-            usage = Some(u);
+    while let Some(res) = bytes_stream.next().await {
+        let bytes = res?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|e| OpenAIAdapterError::Internal(format!("UTF-8 error: {e}")))?;
+
+        let body = text
+            .strip_prefix("data: ")
+            .ok_or_else(|| OpenAIAdapterError::Internal("unexpected SSE format".into()))?;
+        let body = body.strip_suffix("\n\n").unwrap_or(body);
+
+        let v: Value = serde_json::from_str(body).map_err(OpenAIAdapterError::from)?;
+
+        if id.is_empty() {
+            id = v["id"].as_str().map(String::from).unwrap_or_default();
+            created = v["created"].as_u64().unwrap_or(0);
         }
-        if let Some(choice) = chunk.choices.into_iter().next() {
-            if finish_reason.is_none() {
-                finish_reason = choice.finish_reason.map(|s| s.to_string());
-            }
-            if let Some(c) = choice.delta.content {
-                content.push_str(&c);
-            }
-            if let Some(r) = choice.delta.reasoning_content {
-                reasoning.push_str(&r);
+
+        if let Some(u) = v.get("usage") {
+            usage = Some(Usage {
+                prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            });
+        }
+
+        if let Some(choices) = v["choices"].as_array() {
+            if let Some(choice) = choices.first() {
+                if finish_reason.is_none() {
+                    finish_reason = choice["finish_reason"].as_str().and_then(|s| match s {
+                        "tool_calls" => Some(FINISH_TOOL_CALLS),
+                        "stop" => Some(FINISH_STOP),
+                        _ => None,
+                    });
+                }
+                if let Some(c) = choice["delta"]["content"].as_str() {
+                    content.push_str(c);
+                }
+                if let Some(r) = choice["delta"]["reasoning_content"].as_str() {
+                    reasoning.push_str(r);
+                }
+                if let Some(tc) = choice["delta"]["tool_calls"].as_array() {
+                    if !tc.is_empty() {
+                        tool_calls = Some(serde_json::from_value(
+                            choice["delta"]["tool_calls"].clone(),
+                        )?);
+                    }
+                }
             }
         }
     }
 
-    let stop_pos = if !stop.is_empty() {
-        find_stop_pos(&content, &stop)
-    } else {
+    let reasoning_content = if reasoning.is_empty() {
         None
-    };
-
-    let parsed = tool_parser::parse_tool_calls(&content);
-
-    // stop 截断（仅非 tool_calls 路径）
-    if let Some(pos) = stop_pos
-        && parsed.is_none()
-    {
-        content.truncate(pos);
-        finish_reason = Some(FINISH_STOP.to_string());
-    }
-
-    let (message_content, tool_calls) = if let Some((calls, remaining)) = parsed {
-        let tail = remaining.trim();
-        if tail.is_empty() {
-            (None, Some(calls))
-        } else {
-            (Some(tail.to_string()), Some(calls))
-        }
     } else {
-        let c = if content.is_empty() {
-            None
-        } else {
-            Some(content)
-        };
-        (c, None)
+        Some(reasoning)
     };
 
-    let final_reason: Option<&'static str> = if tool_calls.is_some() {
+    let has_tool_calls = tool_calls.is_some();
+    let message_content = if content.is_empty() { None } else { Some(content) };
+    let final_reason = if has_tool_calls {
         Some(FINISH_TOOL_CALLS)
-    } else if finish_reason.as_deref() == Some(FINISH_STOP) {
-        Some(FINISH_STOP)
     } else {
-        None
+        finish_reason
     };
 
     let completion = ChatCompletion {
-        id: next_chatcmpl_id(),
+        id,
         object: "chat.completion",
-        created: now_secs(),
+        created,
         model,
         choices: vec![Choice {
             index: 0,
             message: MessageResponse {
                 role: "assistant",
                 content: message_content,
-                reasoning_content: if reasoning.is_empty() {
-                    None
-                } else {
-                    Some(reasoning)
-                },
+                reasoning_content,
                 refusal: None,
                 annotations: None,
                 audio: None,
@@ -320,16 +516,65 @@ mod tests {
         Ok(Bytes::from(body.to_string()))
     }
 
+    /// 将内容拆分为流式 DS SSE 帧序列，模拟字符级输出（每 ~3 字符一片）
+    /// - pieces: 按顺序排列的 (内容, 片段类型) 对，类型变化时自动插入新 fragment 事件
+    fn make_ds_stream(
+        pieces: &[(&str, &str)],
+        usage_tokens: Option<u32>,
+    ) -> Vec<Result<Bytes, crate::ds_core::CoreError>> {
+        let mut frames = vec![sse_bytes("event: ready\ndata: {}\n\n")];
+
+        for (idx, (content, frag_type)) in pieces.iter().enumerate() {
+            let is_first = idx == 0;
+            let prev_type = if idx > 0 { Some(pieces[idx - 1].1) } else { None };
+            let type_changed = prev_type != Some(*frag_type);
+
+            if is_first {
+                // 首个片段：在 response 创建中声明
+                frames.push(sse_bytes(&format!(
+                    "data: {{\"v\":{{\"response\":{{\"fragments\":[{{\"type\":\"{frag_type}\",\"content\":\"\"}}]}}}}}}\n\n"
+                )));
+            } else if type_changed {
+                // 片段类型变化：APPEND 新片段到 fragments 数组
+                frames.push(sse_bytes(&format!(
+                    "data: {{\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{{\"type\":\"{frag_type}\",\"content\":\"\"}}]}}\n\n"
+                )));
+            }
+
+            // 每 3 字符切割一片
+            let mut i = 0;
+            while i < content.len() {
+                let mut end = (i + 3).min(content.len());
+                while !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let piece = &content[i..end];
+                let escaped = piece.replace('"', "\\\"");
+                frames.push(sse_bytes(&format!(
+                    "data: {{\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"{escaped}\"}}\n\n"
+                )));
+                i = end;
+            }
+        }
+
+        if let Some(tokens) = usage_tokens {
+            frames.push(sse_bytes(&format!(
+                "data: {{\"p\":\"response\",\"o\":\"BATCH\",\"v\":[{{\"p\":\"accumulated_token_usage\",\"v\":{tokens}}},{{\"p\":\"quasi_status\",\"v\":\"FINISHED\"}}]}}\n\n"
+            )));
+        }
+
+        frames.push(sse_bytes(
+            "data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n",
+        ));
+        frames.push(sse_bytes("event: finish\ndata: {}\n\n"));
+
+        frames
+    }
+
     #[tokio::test]
     async fn aggregate_plain_text() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"message_id\":2,\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"hello\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\" world\"}\n\n\
-            data: {\"p\":\"response\",\"o\":\"BATCH\",\"v\":[{\"p\":\"accumulated_token_usage\",\"v\":41},{\"p\":\"quasi_status\",\"v\":\"FINISHED\"}]}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let frames = make_ds_stream(&[("hello world", "RESPONSE")], Some(41));
+        let stream = futures::stream::iter(frames);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
             .await
             .unwrap();
@@ -349,14 +594,11 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_thinking() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"message_id\":2,\"fragments\":[{\"type\":\"THINK\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"thinking\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/elapsed_secs\",\"o\":\"SET\",\"v\":0.95}\n\n\
-            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"answer\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let frames = make_ds_stream(
+            &[("thinking", "THINK"), ("answer", "RESPONSE")],
+            None,
+        );
+        let stream = futures::stream::iter(frames);
         let json = aggregate(stream, "deepseek-expert".into(), vec![], 0)
             .await
             .unwrap();
@@ -374,11 +616,9 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_tool_calls() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "beijing"}}]</tool_calls>"#;
+        let frames = make_ds_stream(&[(tool_xml, "RESPONSE")], None);
+        let stream = futures::stream::iter(frames);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
             .await
             .unwrap();
@@ -399,11 +639,9 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_tool_calls_with_trailing_text() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {}}]</tool_calls> trailing text\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {}}]</tool_calls> trailing text"#;
+        let frames = make_ds_stream(&[(tool_xml, "RESPONSE")], None);
+        let stream = futures::stream::iter(frames);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
             .await
             .unwrap();
@@ -411,18 +649,115 @@ mod tests {
         println!("\n=== AGGREGATED RESPONSE (tool_calls + trailing text) ===");
         println!("{}", serde_json::to_string_pretty(&completion).unwrap());
         println!("========================================================\n");
-        assert_eq!(
-            completion["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap(),
-            "trailing text"
-        );
+        // 尾随文本被 ToolCallStream 丢弃（与流式行为一致），仅保留 tool_calls
+        assert!(completion["choices"][0]["message"]["content"].is_null());
         let calls = completion["choices"][0]["message"]["tool_calls"]
             .as_array()
             .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["function"]["name"], "get_weather");
         assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    async fn try_create_adapter(
+        path: &str,
+    ) -> Option<crate::openai_adapter::OpenAIAdapter> {
+        let p = std::path::Path::new(path);
+        if !p.exists() {
+            eprintln!("Config not found: {path}");
+            return None;
+        }
+        let config = match crate::config::Config::load(p) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to load {path}: {e}");
+                return None;
+            }
+        };
+        match crate::openai_adapter::OpenAIAdapter::new(&config).await {
+            Ok(a) => Some(a),
+            Err(e) => {
+                eprintln!("Adapter init failed for {path}: {e}");
+                None
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_tool_calls_repair_with_live_ds() {
+        // 优先用 e2e 测试配置，失败则回退到主配置
+        let adapter = match try_create_adapter("py-e2e-tests/config.toml").await {
+            Some(a) => a,
+            None => match try_create_adapter("config.toml").await {
+                Some(a) => a,
+                None => {
+                    eprintln!("Skipping test: no working config found");
+                    return;
+                }
+            },
+        };
+        let repair_fn = adapter.create_repair_fn();
+
+        // 多种真实中毒场景：模型输出的 tool_calls 格式损坏
+        let cases: &[(&str, &str)] = &[
+            (
+                "括号不闭合",
+                r#"<tool_calls>{"name": "get_weather", "arguments": {"city": "Beijing"}</tool_calls>"#,
+            ),
+            (
+                "括号样式不一致 — [ 与 } 混用",
+                r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "Beijing"}]}</tool_calls>"#,
+            ),
+            (
+                "XML 风格 — 模型输出 XML 标签而非 JSON",
+                r#"<tool_calls><function><name>get_weather</name><arguments>{"city":"Beijing"}</arguments></function></tool_calls>"#,
+            ),
+        ];
+
+        let mut failures = 0u32;
+        for (label, tool_xml) in cases {
+            let frames = make_ds_stream(&[(tool_xml, "RESPONSE")], None);
+            let bytes_stream = futures::stream::iter(frames);
+
+            let chunks = collect_chunks(super::stream(
+                bytes_stream,
+                "deepseek-default".into(),
+                false,
+                false,
+                vec![],
+                0,
+                Some(repair_fn.clone()),
+            ))
+            .await;
+
+            let tool_chunks: Vec<_> = chunks
+                .iter()
+                .filter(|c| {
+                    c["choices"][0]["delta"]["tool_calls"]
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty())
+                })
+                .collect();
+
+            match tool_chunks.first() {
+                Some(tool_chunk) => {
+                    let call = &tool_chunk["choices"][0]["delta"]["tool_calls"][0];
+                    let name = call["function"]["name"].as_str().unwrap_or("?");
+                    let args = call["function"]["arguments"].as_str().unwrap_or("?");
+                    println!("  ✅ {label} → {name}({args})");
+                }
+                None => {
+                    failures += 1;
+                    eprintln!(
+                        "  ❌ {label} — 修复失败, chunks:\n{}",
+                        serde_json::to_string_pretty(&chunks).unwrap()
+                    );
+                }
+            }
+        }
+
+        adapter.shutdown().await;
+        assert_eq!(failures, 0, "{} of {} cases failed", failures, cases.len());
     }
 
     async fn collect_chunks(st: StreamResponse) -> Vec<serde_json::Value> {
@@ -442,12 +777,8 @@ mod tests {
 
     #[tokio::test]
     async fn stream_plain_text() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"hi\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let frames = make_ds_stream(&[("hi", "RESPONSE")], None);
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -455,6 +786,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (plain_text) ===");
@@ -462,8 +794,6 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("===================================\n");
-        // 内容 "hi" (2 bytes) < W=19，会在缓冲区中延迟释放，
-        // 可能与 finish_reason 合并在同一个 chunk 中
         assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
         // 所有 content 合并后应为 "hi"
@@ -481,13 +811,8 @@ mod tests {
 
     #[tokio::test]
     async fn stream_include_usage() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"x\"}\n\n\
-            data: {\"p\":\"response\",\"o\":\"BATCH\",\"v\":[{\"p\":\"accumulated_token_usage\",\"v\":12}]}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let frames = make_ds_stream(&[("x", "RESPONSE")], Some(12));
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -495,6 +820,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_usage) ===");
@@ -525,12 +851,9 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "f", "arguments": {}}]</tool_calls>"#;
+        let frames = make_ds_stream(&[(tool_xml, "RESPONSE")], None);
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -538,6 +861,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls) ===");
@@ -570,15 +894,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_fragmented_tool_calls_with_thinking() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"思考中\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"北京\\\"}}]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "北京"}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[("思考中", "THINK"), (tool_xml, "RESPONSE")],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -586,6 +907,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (fragmented_tool_calls_with_thinking) ===");
@@ -643,6 +965,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_search_and_open) ===");
@@ -674,13 +997,11 @@ mod tests {
 
     #[tokio::test]
     async fn stream_include_obfuscation() {
-        // 使用足够长的文本（> W=19）确保内容经过完整的流式路径和 obfuscation
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"这是一段足够长的中文文本用于测试混淆\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let frames = make_ds_stream(
+            &[("这是一段足够长的中文文本用于测试混淆", "RESPONSE")],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -688,6 +1009,7 @@ mod tests {
             true,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_obfuscation) ===");
@@ -735,12 +1057,12 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_tool_calls_with_leading_text() {
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你。\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "beijing"}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[("好的，我来帮你。", "RESPONSE"), (tool_xml, "RESPONSE")],
+            None,
+        );
+        let stream = futures::stream::iter(frames);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
             .await
             .unwrap();
@@ -764,15 +1086,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_fragmented() {
-        // 模拟真实场景：前导文本 + 碎片化 JSON <tool_calls>
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你用豆包生成图片。\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<too\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"l_calls>[{\\\"name\\\": \\\"astrbot_execute_shell\\\", \\\"arguments\\\": {\\\"command\\\": \\\"cat /data/astrbot/skills/doubao-image-gen/SKILL.md\\\"}}]</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "astrbot_execute_shell", "arguments": {"command": "cat /data/astrbot/skills/doubao-image-gen/SKILL.md"}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[("好的，我来帮你用豆包生成图片。", "RESPONSE"), (tool_xml, "RESPONSE")],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -780,6 +1099,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls with leading text, fragmented) ===");
@@ -820,21 +1140,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_multi_chunk_fragments() {
-        // 更真实的碎片化场景：JSON 被分成多块
-        // chunk 1: leading text
-        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}
-        // chunk 3: ]
-        // chunk 4: </tool_calls>
-        // chunk 5: FINISHED status
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"让我来查一下。\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "f", "arguments": {}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[("让我来查一下。", "RESPONSE"), (tool_xml, "RESPONSE")],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -842,6 +1153,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (leading text + multi-chunk JSON fragments) ===");
@@ -871,17 +1183,16 @@ mod tests {
     #[tokio::test]
     async fn stream_tool_calls_with_thinking_then_leading_text_then_fragmented_json() {
         // 最完整的生产场景：thinking -> leading text -> 碎片化 <tool_calls>
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"用户要查天气，我需要调用工具\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你查\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"一下。\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "beijing"}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[
+                ("用户要查天气，我需要调用工具", "THINK"),
+                ("好的，我来帮你查一下。", "RESPONSE"),
+                (tool_xml, "RESPONSE"),
+            ],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -889,6 +1200,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (thinking + leading + fragmented JSON) ===");
@@ -917,19 +1229,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_json_split_right_after_tag() {
-        // 真实碎片化场景：<tool_calls> 完整，但内容在后续 chunk 中
-        // chunk 1: leading text
-        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}]
-        // chunk 3: </tool_calls>  ← 单独一个 chunk
-        // chunk 4: FINISHED
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的。\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "f", "arguments": {}}]</tool_calls>"#;
+        let frames = make_ds_stream(
+            &[("好的。", "RESPONSE"), (tool_xml, "RESPONSE")],
+            None,
+        );
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "m".into(),
@@ -937,6 +1242,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (JSON split right after tool_call) ===");
@@ -954,13 +1260,9 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_no_leading_text() {
-        // 最常见的生产场景：无 leading text，模型直接输出 <tool_calls>
-        let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
-            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
-            event: finish\ndata: {}\n\n";
-        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let tool_xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "beijing"}}]</tool_calls>"#;
+        let frames = make_ds_stream(&[(tool_xml, "RESPONSE")], None);
+        let bytes_stream = futures::stream::iter(frames);
         let chunks = collect_chunks(super::stream(
             bytes_stream,
             "deepseek-default".into(),
@@ -968,6 +1270,7 @@ mod tests {
             false,
             vec![],
             0,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls, no leading text) ===");

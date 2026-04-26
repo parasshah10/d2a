@@ -8,6 +8,7 @@
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::ds_core::{CoreError, DeepSeekCore};
 
@@ -21,7 +22,7 @@ pub type StreamResponse = Pin<Box<dyn Stream<Item = Result<Bytes, OpenAIAdapterE
 
 /// OpenAI 适配器
 pub struct OpenAIAdapter {
-    ds_core: DeepSeekCore,
+    ds_core: Arc<DeepSeekCore>,
     model_types: Vec<String>,
     model_registry: std::collections::HashMap<String, String>,
     max_input_tokens: Vec<u32>,
@@ -31,7 +32,7 @@ pub struct OpenAIAdapter {
 impl OpenAIAdapter {
     /// 创建适配器实例
     pub async fn new(config: &crate::config::Config) -> Result<Self, OpenAIAdapterError> {
-        let ds_core = DeepSeekCore::new(config).await?;
+        let ds_core = Arc::new(DeepSeekCore::new(config).await?);
         let model_registry = config.deepseek.model_registry();
         Ok(Self {
             ds_core,
@@ -66,6 +67,7 @@ impl OpenAIAdapter {
     ) -> Result<StreamResponse, OpenAIAdapterError> {
         let req = request::parse(body, &self.model_registry)?;
         let stream = self.try_chat(req.ds_req).await?;
+        let repair_fn = self.create_repair_fn();
         Ok(response::stream(
             stream,
             req.model,
@@ -73,6 +75,7 @@ impl OpenAIAdapter {
             req.include_obfuscation,
             req.stop,
             req.prompt_tokens,
+            Some(repair_fn),
         ))
     }
 
@@ -135,6 +138,33 @@ impl OpenAIAdapter {
     pub async fn shutdown(&self) {
         self.ds_core.shutdown().await;
     }
+
+    /// 创建 tool_calls 修复闭包，捕获 Arc<DeepSeekCore> 发起修复请求
+    pub(crate) fn create_repair_fn(&self) -> response::RepairFn {
+        use std::sync::Arc;
+        let core = self.ds_core.clone();
+        Arc::new(move |raw_xml: String| {
+            let core = core.clone();
+            Box::pin(async move {
+                use crate::ds_core::ChatRequest;
+                let prompt = format!(
+                    "system: repair tool_calls\n\
+                     Fix the following content into a valid JSON array of tool calls. \
+                     Each element must have \"name\" (string) and \"arguments\" (object). \
+                     Output ONLY the JSON array, no markdown, no explanation.\n\n\
+                     Content to fix:\n{raw_xml}"
+                );
+                let req = ChatRequest {
+                    prompt,
+                    thinking_enabled: false,
+                    search_enabled: false,
+                    model_type: "default".to_string(),
+                };
+                let stream = core.v0_chat(req).await.map_err(OpenAIAdapterError::from)?;
+                response::execute_tool_repair(stream).await
+            })
+        })
+    }
 }
 
 /// 适配器错误类型
@@ -155,6 +185,10 @@ pub enum OpenAIAdapterError {
     /// 内部错误（序列化、流转换等）
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// tool_calls XML 解析失败，携带 `<tool_calls>...</tool_calls>` 内的原始文本
+    #[error("tool_calls repair needed: {0}")]
+    ToolCallRepairNeeded(String),
 }
 
 impl From<CoreError> for OpenAIAdapterError {
@@ -184,6 +218,7 @@ impl OpenAIAdapterError {
             Self::Overloaded => 429,
             Self::ProviderError(_) => 502,
             Self::Internal(_) => 500,
+            Self::ToolCallRepairNeeded(_) => 500,
         }
     }
 }

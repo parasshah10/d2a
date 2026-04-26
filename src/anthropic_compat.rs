@@ -60,6 +60,7 @@ impl AnthropicCompat {
             .try_chat(openai_req.ds_req)
             .await
             .map_err(OpenAIAdapterError::from)?;
+        let repair_fn = self.openai_adapter.create_repair_fn();
         let openai_stream = crate::openai_adapter::response::stream(
             ds_stream,
             openai_req.model,
@@ -67,6 +68,7 @@ impl AnthropicCompat {
             openai_req.include_obfuscation,
             openai_req.stop,
             openai_req.prompt_tokens,
+            Some(repair_fn),
         );
         Ok(response::from_chat_completion_stream(
             openai_stream,
@@ -109,6 +111,7 @@ impl From<OpenAIAdapterError> for AnthropicCompatError {
             OpenAIAdapterError::Overloaded => Self::Overloaded,
             OpenAIAdapterError::ProviderError(msg) => Self::Internal(msg),
             OpenAIAdapterError::Internal(msg) => Self::Internal(msg),
+            OpenAIAdapterError::ToolCallRepairNeeded(msg) => Self::Internal(msg),
         }
     }
 }

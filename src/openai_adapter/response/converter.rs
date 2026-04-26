@@ -35,7 +35,11 @@ fn make_usage(prompt_tokens: u32, completion_tokens: u32) -> Usage {
     }
 }
 
-fn make_chunk(model: &str, delta: Delta, finish: Option<&'static str>) -> ChatCompletionChunk {
+pub(crate) fn make_chunk(
+    model: &str,
+    delta: Delta,
+    finish: Option<&'static str>,
+) -> ChatCompletionChunk {
     ChatCompletionChunk {
         id: next_chatcmpl_id(),
         object: "chat.completion.chunk",

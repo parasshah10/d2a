@@ -48,7 +48,7 @@ src/
 ├── config.rs                    # Config loader: -c flag, config.toml default
 ├── ds_core.rs                   # DeepSeek facade: DeepSeekCore, CoreError; declares accounts/ client/ completions/ pow
 ├── ds_core/
-│   ├── accounts.rs              # Account pool: init validation, round-robin selection
+│   ├── accounts.rs              # Account pool: init validation, idle-aware (most-idle-first) selection
 │   ├── pow.rs                   # PoW solver: WASM loading, DeepSeekHashV1 computation
 │   ├── completions.rs           # Chat orchestration: SSE streaming, account guard
 │   └── client.rs                # Raw HTTP client: API endpoints, zero business logic
@@ -85,8 +85,8 @@ src/
 
 **Additional files not in src/**:
 - `config.example.toml` — authoritative configuration reference (all fields documented with examples)
-- `examples/adapter_cli.rs` + `examples/adapter_cli-script.txt` — unified protocol debug CLI (chat/raw/compare/concurrent)
-- `examples/openai_adapter_cli/` — JSON request samples (basic_chat, reasoning_search, stop_sequence, stream_options, tool_call)
+- `examples/adapter_cli.rs` + `examples/adapter_cli-script.txt` — unified protocol debug CLI (modes: `chat`, `raw`, `compare`, `concurrent N`, `status`, `models`/`model <id>`)
+- `examples/adapter_cli/` — JSON request samples (basic_chat, reasoning, reasoning_search, stop, stream, tool_call, tool_call_multi_turn, tool_call_parallel, tool_call_required, web_search)
 - `py-e2e-tests/` — Python e2e test suite using pytest + uv:
   - `openai_endpoint/` — OpenAI-compatible `/v1/chat/completions` tests
   - `anthropic_endpoint/` — Anthropic-compatible `/v1/messages` tests
@@ -227,8 +227,13 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 | OpenAI protocol types | `src/openai_adapter/types.rs` | Request/response structs, `#![allow(dead_code)]` |
 | Model listing | `src/openai_adapter/models.rs` | Model registry and listing |
 | HTTP server/routes | `src/server/` | handlers → stream → error |
-| CLI examples | `examples/ds_core_cli.rs`, `examples/openai_adapter_cli.rs` | Interactive and script modes |
-| Example request JSON | `examples/openai_adapter_cli/` | Pre-built ChatCompletionRequest samples |
+| Unified debug CLI | `examples/adapter_cli.rs` + `examples/adapter_cli-script.txt` | Modes: chat/raw/compare/concurrent/status/models |
+| Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionRequest samples (chat, stream, stop, reasoning, web_search, tool_call, etc.) |
+| Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
+| Stress test scripts | `py-e2e-tests/stress_test_tools_openai.py`, `py-e2e-tests/stress_test_tools_anthropic.py` | Load testing for OpenAI and Anthropic endpoints |
+| CI pipeline | `.github/workflows/ci.yml` | `cargo check + clippy + fmt + audit + machete` and `cargo test` |
+| Release workflow | `.github/workflows/release.yml` | Tag `v*` triggers multi-platform build (8 targets, 4 OS) + CHANGELOG release notes |
+| Claude config | `AGENTS.md` | Agent delegation patterns for this repo |
 | Code style / logging | `docs/code-style.md`, `docs/logging-spec.md` | Comments, naming, targets, levels |
 | API reference | `docs/deepseek-api-reference.md` | DeepSeek endpoint details |
 
@@ -281,13 +286,13 @@ RUST_LOG=debug just serve
 RUST_LOG=ds_core::accounts=debug,ds_core::client=warn,info just serve
 RUST_LOG=adapter=debug,anthropic_compat=debug just serve
 
-# Run ds_core_cli example
-just ds-core-cli
-RUST_LOG=debug just ds-core-cli
-just ds-core-cli -- source examples/ds_core_cli-script.txt
-
-# Run openai_adapter_cli example
-just openai-adapter-cli
+# Run unified protocol debug CLI (modes: chat, raw, compare, concurrent N, status, models, model <id>)
+just adapter-cli
+RUST_LOG=debug just adapter-cli
+# Script mode — runs all JSON samples in sequence (full regression)
+just adapter-cli -- source examples/adapter_cli-script.txt
+# Interactive mode with a specific config
+cargo run --example adapter_cli -- -c /path/to/config.toml
 
 # Run specific test modules (pass test name filter and args)
 just test-adapter-request
@@ -306,6 +311,10 @@ cargo test --lib
 # Run Python e2e tests (requires `uv` and server running on port 5317)
 just e2e
 
+# Stress tests (in py-e2e-tests/, against a running server)
+uv run python py-e2e-tests/stress_test_tools_openai.py
+uv run python py-e2e-tests/stress_test_tools_anthropic.py
+
 # Start server with e2e test config
 just e2e-serve
 
@@ -319,4 +328,10 @@ cargo machete      # requires: cargo install cargo-machete
 # Build
 cargo build
 cargo build --release
+
+# Release (tag push triggers CI: 8 targets x 4 platforms via cross)
+git tag v0.x.x
+git push origin v0.x.x
+# CI extracts changelog from CHANGELOG.md, creates GitHub release
+
 ```

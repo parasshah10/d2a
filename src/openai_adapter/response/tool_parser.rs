@@ -21,7 +21,7 @@ use crate::openai_adapter::types::{
 };
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-const MAX_XML_BUF_LEN: usize = 64 * 1024;
+pub(crate) const MAX_XML_BUF_LEN: usize = 64 * 1024;
 
 /// `<tool_calls>` 标记
 const TAG_START: &str = "<tool_calls>";
@@ -167,17 +167,33 @@ pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
     let inner = &xml[after_start..inner_end];
 
     // 找到第一个 [ 和最后一个 ] 来提取 JSON 数组，容许标签内有非 JSON 文本
-    let arr_start = inner.find('[')?;
-    let arr_end = inner.rfind(']')? + 1;
-    let json_str = &inner[arr_start..arr_end];
-
-    // 标准解析
-    let arr: Option<Vec<serde_json::Value>> = serde_json::from_str(json_str).ok();
-    // 标准解析失败时尝试宽松修复
-    let arr = arr.or_else(|| {
-        let repaired = repair_json(json_str)?;
-        serde_json::from_str(&repaired).ok()
-    })?;
+    // 若没有 [，作为单个 JSON 对象兜底（等价于单元素数组）
+    let arr: Vec<serde_json::Value> = match inner.find('[') {
+        Some(arr_start) => {
+            let arr_end = inner.rfind(']')? + 1;
+            let json_str = &inner[arr_start..arr_end];
+            // 标准解析；失败时尝试宽松修复
+            let arr: Option<Vec<serde_json::Value>> = serde_json::from_str(json_str).ok();
+            arr.or_else(|| {
+                let repaired = repair_json(json_str)?;
+                serde_json::from_str(&repaired).ok()
+            })?
+        }
+        None => {
+            // 定位第一个 { 和最后一个 } 来提取 JSON 对象，容许多余文本
+            let obj_start = inner.find('{')?;
+            let obj_end = inner.rfind('}')? + 1;
+            let json_str = &inner[obj_start..obj_end];
+            let obj: Option<serde_json::Value> = serde_json::from_str(json_str)
+                .ok()
+                .filter(|v: &serde_json::Value| v.is_object());
+            let obj = obj.or_else(|| {
+                let repaired = repair_json(json_str)?;
+                serde_json::from_str(&repaired).ok()
+            })?;
+            vec![obj]
+        }
+    };
 
     let mut calls = Vec::new();
     for item in arr {
@@ -247,6 +263,8 @@ pin_project! {
         state: ToolParseState,
         model: String,
         finish_emitted: bool,
+        // 待修复的原始工具调用 XML：下一次 poll 时返回 Err 触发上层修复
+        repair_pending: Option<String>,
     }
 }
 
@@ -260,6 +278,7 @@ impl<S> ToolCallStream<S> {
             },
             model,
             finish_emitted: false,
+            repair_pending: None,
         }
     }
 }
@@ -272,6 +291,11 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
+
+        if let Some(raw_xml) = this.repair_pending.take() {
+            debug!(target: "adapter", "tool_parser 发出修复请求");
+            return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(raw_xml))));
+        }
 
         loop {
             match this.inner.as_mut().poll_next(cx) {
@@ -325,12 +349,19 @@ where
                                         } else {
                                             debug!(
                                                 target: "adapter",
-                                                "tool_parser 解析失败，回退纯文本"
+                                                "tool_parser 解析失败→请求修复"
                                             );
-                                            choice.delta.content = Some(format!("{before}{rest}"));
-                                            *this.state = ToolParseState::Detecting {
-                                                buffer: String::new(),
-                                            };
+                                            let collected = collected.to_string();
+                                            if before.is_empty() {
+                                                return Poll::Ready(Some(Err(
+                                                    OpenAIAdapterError::ToolCallRepairNeeded(
+                                                        collected,
+                                                    ),
+                                                )));
+                                            }
+                                            choice.delta.content = Some(before);
+                                            *this.repair_pending = Some(collected);
+                                            return Poll::Ready(Some(Ok(chunk)));
                                         }
                                         return Poll::Ready(Some(Ok(chunk)));
                                     }
@@ -374,7 +405,7 @@ where
                                 if let Some(end_pos) = buf.find(TAG_END) {
                                     let end_abs = end_pos + TAG_END.len();
                                     let collected = buf[..end_abs].to_string();
-                                    let tail = buf.split_off(end_abs);
+                                    let _tail = buf.split_off(end_abs);
 
                                     if let Some((calls, _)) = parse_tool_calls(&collected) {
                                         debug!(
@@ -392,14 +423,11 @@ where
                                     } else {
                                         debug!(
                                             target: "adapter",
-                                            "tool_parser 解析失败，回退纯文本"
+                                            "tool_parser 解析失败→请求修复"
                                         );
-                                        let mut flushed = collected;
-                                        flushed.push_str(&tail);
-                                        choice.delta.content = Some(flushed);
-                                        *this.state = ToolParseState::Detecting {
-                                            buffer: String::new(),
-                                        };
+                                        return Poll::Ready(Some(Err(
+                                            OpenAIAdapterError::ToolCallRepairNeeded(collected),
+                                        )));
                                     }
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
@@ -450,9 +478,12 @@ where
                                     } else {
                                         debug!(
                                             target: "adapter",
-                                            "tool_parser 流结束但解析失败，回退纯文本"
+                                            "tool_parser finish→请求修复"
                                         );
-                                        choice.delta.content = Some(flushed);
+                                        *this.state = ToolParseState::Done;
+                                        return Poll::Ready(Some(Err(
+                                            OpenAIAdapterError::ToolCallRepairNeeded(flushed),
+                                        )));
                                     }
                                     *this.state = ToolParseState::Done;
                                     return Poll::Ready(Some(Ok(chunk)));
@@ -512,17 +543,11 @@ where
                             } else {
                                 debug!(
                                     target: "adapter",
-                                    "tool_parser 流结束但解析失败，回退纯文本"
+                                    "tool_parser 流结束→请求修复"
                                 );
-                                let chunk = make_end_chunk(
-                                    this.model,
-                                    Delta {
-                                        content: Some(buf),
-                                        ..Default::default()
-                                    },
-                                    "stop",
-                                );
-                                return Poll::Ready(Some(Ok(chunk)));
+                                return Poll::Ready(Some(Err(
+                                    OpenAIAdapterError::ToolCallRepairNeeded(buf),
+                                )));
                             }
                         }
                         ToolParseState::Done => return Poll::Ready(None),
@@ -716,5 +741,52 @@ mod tests {
         assert!(!is_inside_code_fence("普通文本", 0));
         assert!(is_inside_code_fence("```\n<tool_calls>", 5));
         assert!(!is_inside_code_fence("```\ncode\n```\n<tool_calls>", 17));
+    }
+
+    // --- single object fallback ---
+
+    #[test]
+    fn parse_tool_calls_single_object() {
+        let xml =
+            r#"<tool_calls>{"name": "get_weather", "arguments": {"city": "北京"}}</tool_calls>"#;
+        let (calls, _) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().arguments,
+            r#"{"city":"北京"}"#
+        );
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object_with_newlines() {
+        let xml = "<tool_calls>\n{\"name\": \"Bash\", \"arguments\": {\"command\": \"ls\"}}\n</tool_calls>";
+        let (calls, _) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "Bash");
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object_with_surrounding_text() {
+        let xml = r#"<tool_calls>以下是工具调用：{"name": "f", "arguments": {}}</tool_calls>"#;
+        let (calls, remaining) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object_unquoted_keys() {
+        let xml = r#"<tool_calls>{name: "get_weather", arguments: {city: "北京"}}</tool_calls>"#;
+        let (calls, _) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object_and_repair_backslashes() {
+        let xml = r#"<tool_calls>{"name": "read_file", "arguments": {"path": "C:\Users\name"}}</tool_calls>"#;
+        let (calls, _) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "read_file");
     }
 }

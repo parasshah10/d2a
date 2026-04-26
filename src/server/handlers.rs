@@ -71,6 +71,7 @@ async fn handle_chat(
 
     if stream {
         log::debug!(target: "http::response", "200 SSE stream started");
+        let repair_fn = adapter.create_repair_fn();
         Ok(ChatResult::Stream(crate::openai_adapter::response::stream(
             ds_stream,
             model,
@@ -78,6 +79,7 @@ async fn handle_chat(
             include_obfuscation,
             stop,
             prompt_tokens,
+            Some(repair_fn),
         )))
     } else {
         let json =
