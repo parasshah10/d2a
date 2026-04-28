@@ -15,7 +15,7 @@ use crate::ds_core::{CoreError, DeepSeekCore};
 mod models;
 pub(crate) mod request;
 pub(crate) mod response;
-mod types;
+pub(crate) mod types;
 
 pub use types::ChatCompletionsRequest;
 

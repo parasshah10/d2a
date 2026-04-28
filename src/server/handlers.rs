@@ -13,7 +13,7 @@ use axum::{
 };
 use bytes::Bytes;
 
-use crate::anthropic_compat::{AnthropicCompat, AnthropicCompatError};
+use crate::anthropic_compat::{AnthropicCompat, AnthropicOutput};
 use crate::openai_adapter::{
     ChatCompletionsRequest, ChatOutput, OpenAIAdapter, OpenAIAdapterError,
 };
@@ -113,33 +113,26 @@ pub(crate) async fn anthropic_messages(
 ) -> Result<Response, ServerError> {
     let request_id = next_request_id();
     log::debug!(target: "http::request", "req={} anthropic body: {}", request_id, String::from_utf8_lossy(&body));
-    // 先解析出 stream 字段决定走流式还是非流式
-    let stream = serde_json::from_slice::<crate::anthropic_compat::request::MessagesRequest>(&body)
-        .map(|req| req.stream)
-        .map_err(AnthropicCompatError::from)?;
 
-    log::debug!(target: "http::request", "req={} POST /anthropic/v1/messages stream={}", request_id, stream);
-
-    if stream {
-        let result = state
-            .anthropic_compat
-            .messages_stream(&body, &request_id)
-            .await?;
-        log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
-        Ok(SseBody::new(result.data)
-            .with_header(X_DS_ACCOUNT, &result.account_id)
-            .into_response())
-    } else {
-        let result = state.anthropic_compat.messages(&body, &request_id).await?;
-        log::debug!(target: "http::response", "req={} 200 JSON response {} bytes", request_id, result.data.len());
-        let body = Body::from(result.data);
-        Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(X_DS_ACCOUNT, &result.account_id)
-            .body(body)
-            .unwrap()
-            .into_response())
+    let result = state.anthropic_compat.messages(&body, &request_id).await?;
+    match result.data {
+        AnthropicOutput::Stream(stream) => {
+            log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
+            Ok(SseBody::new(stream)
+                .with_header(X_DS_ACCOUNT, &result.account_id)
+                .into_response())
+        }
+        AnthropicOutput::Json(json) => {
+            log::debug!(target: "http::response", "req={} 200 JSON response {} bytes", request_id, json.len());
+            let body = Body::from(json);
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(X_DS_ACCOUNT, &result.account_id)
+                .body(body)
+                .unwrap()
+                .into_response())
+        }
     }
 }
 
@@ -174,11 +167,5 @@ pub(crate) async fn anthropic_get_model(
                 .into_response())
         }
         None => Err(ServerError::NotFound(id)),
-    }
-}
-
-impl From<serde_json::Error> for AnthropicCompatError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::BadRequest(format!("bad request: {}", e))
     }
 }

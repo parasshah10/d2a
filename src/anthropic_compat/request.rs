@@ -1,5 +1,8 @@
 //! Anthropic 请求映射 —— 将 Anthropic Messages 请求映射为 OpenAI ChatCompletion 请求
 //!
+//! 转换策略：Anthropic JSON → MessagesRequest 结构体 → ChatCompletionsRequest 结构体。
+//! 不再经过中间 JSON 序列化，直接构造目标结构体。
+//!
 //! 不支持的字段（top_k、cache_control 等）兼容解析但不传入核心流程。
 
 #![allow(dead_code)]
@@ -7,9 +10,13 @@
 use log::debug;
 
 use serde::Deserialize;
-use serde_json::json;
 
 use crate::anthropic_compat::AnthropicCompatError;
+use crate::openai_adapter::types::{
+    ChatCompletionsRequest, ContentPart, FunctionCall, FunctionDefinition, ImageUrlContent,
+    Message, MessageContent as OaiMessageContent, NamedFunction, NamedToolChoice, ResponseFormat,
+    StopSequence, Tool, ToolCall, ToolChoice as OaiToolChoice,
+};
 
 // ============================================================================
 // Anthropic 请求类型
@@ -273,107 +280,108 @@ pub struct CacheControlEphemeral {
 // 映射函数
 // ============================================================================
 
-/// 将 Anthropic Messages 请求 JSON 映射为 OpenAI ChatCompletion 请求 JSON
-pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
+/// 将 Anthropic Messages 请求直接映射为 ChatCompletionsRequest 结构体
+pub fn to_chat_completions_request(
+    body: &[u8],
+) -> Result<ChatCompletionsRequest, AnthropicCompatError> {
     let req: MessagesRequest = serde_json::from_slice(body)
         .map_err(|e| AnthropicCompatError::BadRequest(format!("bad request: {}", e)))?;
     debug!(target: "anthropic_compat::request", "解析成功: model={}, messages={}, stream={}", req.model, req.messages.len(), req.stream);
 
-    let mut openai = serde_json::Map::new();
-
-    openai.insert("model".to_string(), json!(req.model));
-    openai.insert("max_tokens".to_string(), json!(req.max_tokens));
-
     // messages: system 前置 + messages 转换
     let mut messages = Vec::new();
-    if let Some(system) = req.system {
-        messages.push(system_to_openai(&system));
+    if let Some(ref system) = req.system {
+        messages.push(system_to_message(system));
     }
     for msg in &req.messages {
-        messages.extend(message_param_to_openai(msg));
-    }
-    openai.insert("messages".to_string(), json!(messages));
-
-    // stream
-    if req.stream {
-        openai.insert("stream".to_string(), json!(true));
+        messages.extend(message_param_to_messages(msg));
     }
 
-    // stop_sequences -> stop
-    if let Some(stop) = req.stop_sequences
-        && !stop.is_empty()
-    {
-        openai.insert("stop".to_string(), json!(stop));
-    }
+    // tools + parallel_tool_calls
+    let (tools, parallel_tool_calls) = convert_tools_and_choice(&req);
 
-    // temperature
-    if let Some(t) = req.temperature {
-        openai.insert("temperature".to_string(), json!(t));
-    }
+    // thinking → reasoning_effort
+    let reasoning_effort = req.thinking.map(|t| match t {
+        ThinkingConfig::Enabled { .. } | ThinkingConfig::Adaptive { .. } => "high".to_string(),
+        ThinkingConfig::Disabled => "none".to_string(),
+    });
 
-    // top_p
-    if let Some(p) = req.top_p {
-        openai.insert("top_p".to_string(), json!(p));
-    }
+    // output_config.format → response_format
+    let response_format = req
+        .output_config
+        .and_then(|oc| oc.format)
+        .map(|fmt| ResponseFormat {
+            ty: "json_schema".to_string(),
+            json_schema: Some(fmt.schema),
+        });
 
-    // top_k: 当前不映射到 OpenAI（OpenAI 无 top_k 参数）
+    // web_search_options
+    let web_search_options = req
+        .web_search_options
+        .and_then(|v| serde_json::from_value(v).ok());
 
-    // tools
-    let mut parallel_tool_calls_disabled = false;
-    if let Some(tools) = req.tools {
-        let openai_tools: Vec<serde_json::Value> =
-            tools.iter().filter_map(tool_union_to_openai).collect();
-        if !openai_tools.is_empty() {
-            openai.insert("tools".to_string(), json!(openai_tools));
-        }
-    }
-
-    // tool_choice
-    if let Some(tc) = req.tool_choice {
-        parallel_tool_calls_disabled = tc.disable_parallel();
-        openai.insert("tool_choice".to_string(), tc.to_openai());
-    }
-
-    if parallel_tool_calls_disabled {
-        openai.insert("parallel_tool_calls".to_string(), json!(false));
-    }
-
-    // thinking -> reasoning_effort
-    if let Some(thinking) = req.thinking {
-        let effort = match thinking {
-            ThinkingConfig::Enabled { .. } | ThinkingConfig::Adaptive { .. } => "high",
-            ThinkingConfig::Disabled => "none",
-        };
-        openai.insert("reasoning_effort".to_string(), json!(effort));
-    }
-
-    // output_config.format -> response_format
-    if let Some(output_config) = req.output_config
-        && let Some(fmt) = output_config.format
-    {
-        openai.insert(
-            "response_format".to_string(),
-            json!({
-                "type": "json_schema",
-                "json_schema": fmt.schema
-            }),
-        );
-    }
-
-    // web_search_options -> web_search_options
-    if let Some(opts) = req.web_search_options {
-        openai.insert("web_search_options".to_string(), opts);
-    }
-
-    serde_json::to_vec(&openai)
-        .map_err(|e| AnthropicCompatError::Internal(format!("json error: {}", e)))
+    Ok(ChatCompletionsRequest {
+        model: req.model,
+        messages,
+        stream: req.stream,
+        max_tokens: Some(req.max_tokens),
+        stop: req
+            .stop_sequences
+            .filter(|s| !s.is_empty())
+            .map(StopSequence::Multiple),
+        temperature: req.temperature,
+        top_p: req.top_p,
+        tools,
+        tool_choice: req.tool_choice.map(|tc| convert_tool_choice(&tc)),
+        parallel_tool_calls,
+        reasoning_effort,
+        response_format,
+        web_search_options,
+        // 其余字段保持默认
+        audio: None,
+        frequency_penalty: None,
+        function_call: None,
+        functions: None,
+        logit_bias: None,
+        logprobs: None,
+        max_completion_tokens: None,
+        metadata: None,
+        modalities: None,
+        n: None,
+        prediction: None,
+        presence_penalty: None,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
+        safety_identifier: None,
+        seed: None,
+        service_tier: None,
+        store: None,
+        stream_options: None,
+        top_logprobs: None,
+        user: None,
+        verbosity: None,
+        _extra: Default::default(),
+    })
 }
 
 // ============================================================================
 // 辅助函数
 // ============================================================================
 
-fn system_to_openai(system: &SystemContent) -> serde_json::Value {
+fn empty_message(role: String, content: OaiMessageContent) -> Message {
+    Message {
+        role,
+        content: Some(content),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+        function_call: None,
+        audio: None,
+        refusal: None,
+    }
+}
+
+fn system_to_message(system: &SystemContent) -> Message {
     let text = match system {
         SystemContent::Text(t) => t.clone(),
         SystemContent::Blocks(blocks) => blocks
@@ -382,33 +390,35 @@ fn system_to_openai(system: &SystemContent) -> serde_json::Value {
             .collect::<Vec<_>>()
             .join("\n"),
     };
-    json!({"role": "system", "content": text})
+    empty_message("system".to_string(), OaiMessageContent::Text(text))
 }
 
-fn message_param_to_openai(msg: &MessageParam) -> Vec<serde_json::Value> {
+fn message_param_to_messages(msg: &MessageParam) -> Vec<Message> {
     let blocks = match &msg.content {
         MessageContent::Text(t) => {
-            return vec![json!({"role": msg.role, "content": t})];
+            return vec![empty_message(
+                msg.role.clone(),
+                OaiMessageContent::Text(t.clone()),
+            )];
         }
         MessageContent::Blocks(b) => b,
     };
 
     match msg.role.as_str() {
-        "assistant" => assistant_blocks_to_openai(blocks),
-        "user" => user_blocks_to_openai(blocks),
+        "assistant" => assistant_blocks_to_messages(blocks),
+        "user" => user_blocks_to_messages(blocks),
         _ => {
-            // 其他 role 直接当作文本处理
             let text = extract_text_from_blocks(blocks);
-            vec![json!({"role": msg.role, "content": text})]
+            vec![empty_message(
+                msg.role.clone(),
+                OaiMessageContent::Text(text),
+            )]
         }
     }
 }
 
 /// 将 assistant 的 content blocks 映射为 OpenAI 消息
-/// - text -> content
-/// - tool_use -> tool_calls
-/// - thinking / redacted_thinking / other -> 跳过
-fn assistant_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
+fn assistant_blocks_to_messages(blocks: &[ContentBlock]) -> Vec<Message> {
     let mut texts = Vec::new();
     let mut tool_calls = Vec::new();
 
@@ -416,14 +426,16 @@ fn assistant_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value>
         match block {
             ContentBlock::Text { text } => texts.push(text.clone()),
             ContentBlock::ToolUse { id, name, input } => {
-                tool_calls.push(json!({
-                    "id": id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": input.to_string()
-                    }
-                }));
+                tool_calls.push(ToolCall {
+                    id: id.clone(),
+                    ty: "function".to_string(),
+                    function: Some(FunctionCall {
+                        name: name.clone(),
+                        arguments: input.to_string(),
+                    }),
+                    custom: None,
+                    index: 0,
+                });
             }
             ContentBlock::Thinking { .. }
             | ContentBlock::RedactedThinking { .. }
@@ -433,29 +445,30 @@ fn assistant_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value>
         }
     }
 
-    let mut msg = serde_json::Map::new();
-    msg.insert("role".to_string(), json!("assistant"));
-
     let content = if texts.is_empty() {
-        json!(null)
+        None
     } else {
-        json!(texts.join("\n"))
+        Some(OaiMessageContent::Text(texts.join("\n")))
     };
-    msg.insert("content".to_string(), content);
 
-    if !tool_calls.is_empty() {
-        msg.insert("tool_calls".to_string(), json!(tool_calls));
-    }
-
-    vec![json!(msg)]
+    vec![Message {
+        role: "assistant".to_string(),
+        content,
+        name: None,
+        tool_call_id: None,
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
+        function_call: None,
+        audio: None,
+        refusal: None,
+    }]
 }
 
 /// 将 user 的 content blocks 映射为 OpenAI 消息
-/// - text -> text content
-/// - image -> image_url content parts
-/// - tool_result -> tool role message(s)
-/// - thinking / other -> 跳过
-fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
+fn user_blocks_to_messages(blocks: &[ContentBlock]) -> Vec<Message> {
     let mut text_parts = Vec::new();
     let mut image_parts = Vec::new();
     let mut tool_results = Vec::new();
@@ -481,11 +494,16 @@ fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
                     Some(ToolResultContent::Blocks(b)) => extract_text_from_blocks(b),
                     None => String::new(),
                 };
-                tool_results.push(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_use_id,
-                    "content": text
-                }));
+                tool_results.push(Message {
+                    role: "tool".to_string(),
+                    content: Some(OaiMessageContent::Text(text)),
+                    name: None,
+                    tool_call_id: Some(tool_use_id.clone()),
+                    tool_calls: None,
+                    function_call: None,
+                    audio: None,
+                    refusal: None,
+                });
             }
             ContentBlock::Thinking { .. }
             | ContentBlock::RedactedThinking { .. }
@@ -499,18 +517,46 @@ fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
     // 文本 + 图片合并为一个 user message
     if !text_parts.is_empty() || !image_parts.is_empty() {
         if image_parts.is_empty() {
-            // 纯文本：合并为单个字符串
-            result.push(json!({"role": "user", "content": text_parts.join("\n")}));
+            result.push(empty_message(
+                "user".to_string(),
+                OaiMessageContent::Text(text_parts.join("\n")),
+            ));
         } else {
             // 包含图片：使用 parts 数组
             let mut parts = Vec::new();
             for text in &text_parts {
-                parts.push(json!({"type": "text", "text": text}));
+                parts.push(ContentPart {
+                    ty: "text".to_string(),
+                    text: Some(text.clone()),
+                    image_url: None,
+                    input_audio: None,
+                    file: None,
+                    refusal: None,
+                });
             }
             for url in &image_parts {
-                parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                parts.push(ContentPart {
+                    ty: "image_url".to_string(),
+                    text: None,
+                    image_url: Some(ImageUrlContent {
+                        url: url.clone(),
+                        detail: None,
+                    }),
+                    input_audio: None,
+                    file: None,
+                    refusal: None,
+                });
             }
-            result.push(json!({"role": "user", "content": parts}));
+            result.push(Message {
+                role: "user".to_string(),
+                content: Some(OaiMessageContent::Parts(parts)),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+                function_call: None,
+                audio: None,
+                refusal: None,
+            });
         }
     }
 
@@ -531,23 +577,51 @@ fn extract_text_from_blocks(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-fn tool_union_to_openai(tool: &ToolUnion) -> Option<serde_json::Value> {
-    match tool {
-        ToolUnion::Custom {
-            name,
-            description,
-            input_schema,
-            strict,
-        } => Some(json!({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description.as_deref().unwrap_or(""),
-                "parameters": input_schema,
-                "strict": strict.unwrap_or(false)
-            }
-        })),
-        ToolUnion::Other => None,
+fn convert_tools_and_choice(req: &MessagesRequest) -> (Option<Vec<Tool>>, Option<bool>) {
+    let tools = req.tools.as_ref().map(|tools| {
+        tools
+            .iter()
+            .filter_map(|tool| match tool {
+                ToolUnion::Custom {
+                    name,
+                    description,
+                    input_schema,
+                    strict,
+                } => Some(Tool {
+                    ty: "function".to_string(),
+                    function: Some(FunctionDefinition {
+                        name: name.clone(),
+                        description: Some(description.as_deref().unwrap_or("").to_string()),
+                        parameters: input_schema.clone(),
+                        strict: *strict,
+                    }),
+                    custom: None,
+                }),
+                ToolUnion::Other => None,
+            })
+            .collect()
+    });
+
+    let disable_parallel = req
+        .tool_choice
+        .as_ref()
+        .map(|tc| tc.disable_parallel())
+        .unwrap_or(false);
+
+    let parallel_tool_calls = if disable_parallel { Some(false) } else { None };
+
+    (tools, parallel_tool_calls)
+}
+
+fn convert_tool_choice(tc: &ToolChoice) -> OaiToolChoice {
+    match tc {
+        ToolChoice::Auto { .. } => OaiToolChoice::Mode("auto".to_string()),
+        ToolChoice::Any { .. } => OaiToolChoice::Mode("required".to_string()),
+        ToolChoice::Tool { name, .. } => OaiToolChoice::Named(NamedToolChoice {
+            ty: "function".to_string(),
+            function: NamedFunction { name: name.clone() },
+        }),
+        ToolChoice::None => OaiToolChoice::Mode("none".to_string()),
     }
 }
 
@@ -567,18 +641,6 @@ impl ToolChoice {
             ToolChoice::None => false,
         }
     }
-
-    fn to_openai(&self) -> serde_json::Value {
-        match self {
-            ToolChoice::Auto { .. } => json!("auto"),
-            ToolChoice::Any { .. } => json!("required"),
-            ToolChoice::Tool { name, .. } => json!({
-                "type": "function",
-                "function": { "name": name }
-            }),
-            ToolChoice::None => json!("none"),
-        }
-    }
 }
 
 // ============================================================================
@@ -589,10 +651,6 @@ impl ToolChoice {
 mod tests {
     use super::*;
 
-    fn parse_openai(json: &[u8]) -> serde_json::Value {
-        serde_json::from_slice(json).unwrap()
-    }
-
     #[test]
     fn basic_user_message() {
         let body = br#"{
@@ -601,12 +659,15 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["model"], "deepseek-default");
-        assert_eq!(openai["max_tokens"], 1024);
-        assert_eq!(openai["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(openai["messages"][0]["role"], "user");
-        assert_eq!(openai["messages"][0]["content"], "Hello");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.model, "deepseek-default");
+        assert_eq!(req.max_tokens, Some(1024));
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text("Hello".to_string()))
+        );
     }
 
     #[test]
@@ -618,12 +679,16 @@ mod tests {
             "system": "You are a helpful assistant."
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let msgs = openai["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0]["role"], "system");
-        assert_eq!(msgs[0]["content"], "You are a helpful assistant.");
-        assert_eq!(msgs[1]["role"], "user");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.messages.len(), 2);
+        assert_eq!(req.messages[0].role, "system");
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text(
+                "You are a helpful assistant.".to_string()
+            ))
+        );
+        assert_eq!(req.messages[1].role, "user");
     }
 
     #[test]
@@ -635,9 +700,11 @@ mod tests {
             "system": [{"type": "text", "text": "Sys1"}, {"type": "text", "text": "Sys2"}]
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let msgs = openai["messages"].as_array().unwrap();
-        assert_eq!(msgs[0]["content"], "Sys1\nSys2");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text("Sys1\nSys2".to_string()))
+        );
     }
 
     #[test]
@@ -650,9 +717,11 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        // 多文本块合并为单个字符串
-        assert_eq!(openai["messages"][0]["content"], "Hello\nWorld");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text("Hello\nWorld".to_string()))
+        );
     }
 
     #[test]
@@ -671,17 +740,20 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let msg = &openai["messages"][0];
-        assert_eq!(msg["role"], "assistant");
-        assert_eq!(msg["content"], "Let me check");
-        let tool_calls = msg["tool_calls"].as_array().unwrap();
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0]["id"], "toolu_01");
-        assert_eq!(tool_calls[0]["type"], "function");
-        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+        let req = to_chat_completions_request(body).unwrap();
+        let msg = &req.messages[0];
+        assert_eq!(msg.role, "assistant");
         assert_eq!(
-            tool_calls[0]["function"]["arguments"],
+            msg.content,
+            Some(OaiMessageContent::Text("Let me check".to_string()))
+        );
+        let tool_calls = msg.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "toolu_01");
+        assert_eq!(tool_calls[0].ty, "function");
+        assert_eq!(tool_calls[0].function.as_ref().unwrap().name, "get_weather");
+        assert_eq!(
+            tool_calls[0].function.as_ref().unwrap().arguments,
             r#"{"city":"Beijing"}"#
         );
     }
@@ -701,12 +773,14 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let msgs = openai["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0]["role"], "tool");
-        assert_eq!(msgs[0]["tool_call_id"], "toolu_01");
-        assert_eq!(msgs[0]["content"], "25C");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "tool");
+        assert_eq!(req.messages[0].tool_call_id, Some("toolu_01".to_string()));
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text("25C".to_string()))
+        );
     }
 
     #[test]
@@ -721,15 +795,17 @@ mod tests {
             "top_p": 0.9
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["stream"], true);
-        let stop = openai["stop"].as_array().unwrap();
-        assert_eq!(stop.len(), 2);
-        assert_eq!(stop[0], "STOP");
-        let temp = openai["temperature"].as_f64().unwrap();
-        assert!((temp - 0.7).abs() < 0.001, "temperature mismatch: {}", temp);
-        let top_p = openai["top_p"].as_f64().unwrap();
-        assert!((top_p - 0.9).abs() < 0.001, "top_p mismatch: {}", top_p);
+        let req = to_chat_completions_request(body).unwrap();
+        assert!(req.stream);
+        assert_eq!(
+            req.stop,
+            Some(StopSequence::Multiple(vec![
+                "STOP".to_string(),
+                "HALT".to_string()
+            ]))
+        );
+        assert!((req.temperature.unwrap() - 0.7).abs() < 0.001);
+        assert!((req.top_p.unwrap() - 0.9).abs() < 0.001);
     }
 
     #[test]
@@ -749,12 +825,15 @@ mod tests {
             "tool_choice": {"type": "auto"}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let tools = openai["tools"].as_array().unwrap();
+        let req = to_chat_completions_request(body).unwrap();
+        let tools = req.tools.as_ref().unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["type"], "function");
-        assert_eq!(tools[0]["function"]["name"], "get_weather");
-        assert_eq!(openai["tool_choice"], "auto");
+        assert_eq!(tools[0].ty, "function");
+        assert_eq!(tools[0].function.as_ref().unwrap().name, "get_weather");
+        assert!(matches!(
+            req.tool_choice,
+            Some(OaiToolChoice::Mode(ref m)) if m == "auto"
+        ));
     }
 
     #[test]
@@ -767,10 +846,14 @@ mod tests {
             "tool_choice": {"type": "tool", "name": "get_weather"}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let tc = &openai["tool_choice"];
-        assert_eq!(tc["type"], "function");
-        assert_eq!(tc["function"]["name"], "get_weather");
+        let req = to_chat_completions_request(body).unwrap();
+        match req.tool_choice {
+            Some(OaiToolChoice::Named(ref nc)) => {
+                assert_eq!(nc.ty, "function");
+                assert_eq!(nc.function.name, "get_weather");
+            }
+            other => panic!("expected Named, got {:?}", other),
+        }
     }
 
     #[test]
@@ -783,8 +866,8 @@ mod tests {
             "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["parallel_tool_calls"], false);
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.parallel_tool_calls, Some(false));
     }
 
     #[test]
@@ -796,8 +879,8 @@ mod tests {
             "thinking": {"type": "enabled", "budget_tokens": 2048}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["reasoning_effort"], "high");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.reasoning_effort, Some("high".to_string()));
     }
 
     #[test]
@@ -809,8 +892,8 @@ mod tests {
             "thinking": {"type": "disabled"}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["reasoning_effort"], "none");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(req.reasoning_effort, Some("none".to_string()));
     }
 
     #[test]
@@ -822,9 +905,10 @@ mod tests {
             "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["response_format"]["type"], "json_schema");
-        assert_eq!(openai["response_format"]["json_schema"]["type"], "object");
+        let req = to_chat_completions_request(body).unwrap();
+        let rf = req.response_format.as_ref().unwrap();
+        assert_eq!(rf.ty, "json_schema");
+        assert_eq!(rf.json_schema.as_ref().unwrap()["type"], "object");
     }
 
     #[test]
@@ -843,12 +927,16 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["messages"][0]["content"], "Hello");
+        let req = to_chat_completions_request(body).unwrap();
+        assert_eq!(
+            req.messages[0].content,
+            Some(OaiMessageContent::Text("Hello".to_string()))
+        );
     }
 
     #[test]
     fn top_k_not_mapped() {
+        // top_k has no OpenAI equivalent — verify it doesn't crash
         let body = br#"{
             "model": "deepseek-default",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -856,8 +944,9 @@ mod tests {
             "top_k": 40
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert!(openai.get("top_k").is_none());
+        let req = to_chat_completions_request(body).unwrap();
+        // top_k is parsed but not mapped to any field
+        assert_eq!(req.model, "deepseek-default");
     }
 
     #[test]
@@ -872,10 +961,10 @@ mod tests {
             ]
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let tools = openai["tools"].as_array().unwrap();
+        let req = to_chat_completions_request(body).unwrap();
+        let tools = req.tools.as_ref().unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["function"]["name"], "my_tool");
+        assert_eq!(tools[0].function.as_ref().unwrap().name, "my_tool");
     }
 
     #[test]
@@ -894,13 +983,17 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let content = openai["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["type"], "text");
-        assert_eq!(content[1]["type"], "image_url");
+        let req = to_chat_completions_request(body).unwrap();
+        let parts = match &req.messages[0].content {
+            Some(OaiMessageContent::Parts(parts)) => parts,
+            other => panic!("expected Parts, got {:?}", other),
+        };
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].ty, "text");
+        assert_eq!(parts[0].text, Some("Describe this".to_string()));
+        assert_eq!(parts[1].ty, "image_url");
         assert_eq!(
-            content[1]["image_url"]["url"],
+            parts[1].image_url.as_ref().unwrap().url,
             "data:image/jpeg;base64,abc123"
         );
     }
@@ -920,10 +1013,13 @@ mod tests {
             "max_tokens": 1024
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let content = openai["messages"][0]["content"].as_array().unwrap();
+        let req = to_chat_completions_request(body).unwrap();
+        let parts = match &req.messages[0].content {
+            Some(OaiMessageContent::Parts(parts)) => parts,
+            other => panic!("expected Parts, got {:?}", other),
+        };
         assert_eq!(
-            content[0]["image_url"]["url"],
+            parts[0].image_url.as_ref().unwrap().url,
             "https://example.com/img.jpg"
         );
     }
@@ -937,15 +1033,15 @@ mod tests {
             "web_search_options": {"search_context_size": "high"}
         }"#;
 
-        let openai = parse_openai(&to_openai_request(body).unwrap());
-        let opts = &openai["web_search_options"];
-        assert_eq!(opts["search_context_size"], "high");
+        let req = to_chat_completions_request(body).unwrap();
+        let opts = req.web_search_options.as_ref().unwrap();
+        assert_eq!(opts.search_context_size, Some("high".to_string()));
     }
 
     #[test]
     fn malformed_json_error() {
         let body = b"not-json";
-        let err = to_openai_request(body).unwrap_err();
+        let err = to_chat_completions_request(body).unwrap_err();
         assert!(matches!(err, AnthropicCompatError::BadRequest(_)));
     }
 }

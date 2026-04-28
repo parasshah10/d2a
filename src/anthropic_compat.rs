@@ -1,7 +1,7 @@
 //! Anthropic 协议兼容层 —— 基于 openai_adapter 提供 Anthropic API 兼容接口
 //!
 //! 本模块不直接访问 ds_core，所有数据通过 openai_adapter 获取并做格式映射。
-//! 请求流向：Anthropic JSON → openai_adapter 请求映射 → ds_core → 响应映射回 Anthropic 格式。
+//! 请求流向：Anthropic JSON → ChatCompletionsRequest → openai_adapter → 响应映射回 Anthropic 格式。
 
 mod models;
 pub(crate) mod request;
@@ -17,9 +17,13 @@ use bytes::Bytes;
 use futures::Stream;
 use log::debug;
 
-use crate::openai_adapter::{
-    ChatCompletionsRequest, ChatOutput, ChatResult, OpenAIAdapter, OpenAIAdapterError,
-};
+use crate::openai_adapter::{ChatOutput, ChatResult, OpenAIAdapter, OpenAIAdapterError};
+
+/// Anthropic 统一输出（对标 openai_adapter 的 ChatOutput）
+pub enum AnthropicOutput {
+    Stream(StreamResponse),
+    Json(Vec<u8>),
+}
 
 /// Anthropic 兼容层
 pub struct AnthropicCompat {
@@ -32,65 +36,34 @@ impl AnthropicCompat {
         Self { openai_adapter }
     }
 
-    /// POST /v1/messages (非流式)
+    /// POST /v1/messages（统一入口）
     ///
-    /// 将 Anthropic 请求映射为 OpenAI 请求，获取响应后再映射回 Anthropic Message 格式。
+    /// 将 Anthropic 请求映射为 ChatCompletionsRequest，委托给 openai_adapter，
+    /// 返回时再按 OpenAI 的 stream 分流结果映射回 Anthropic 格式。
     pub async fn messages(
         &self,
         body: &[u8],
         request_id: &str,
-    ) -> Result<ChatResult<Vec<u8>>, AnthropicCompatError> {
+    ) -> Result<ChatResult<AnthropicOutput>, AnthropicCompatError> {
         debug!(target: "anthropic_compat", "收到 messages 请求");
-        let openai_body = request::to_openai_request(body)?;
-        let openai_req: ChatCompletionsRequest = serde_json::from_slice(&openai_body)
-            .map_err(|e| AnthropicCompatError::Internal(format!("json error: {}", e)))?;
-        let openai_result = self
-            .openai_adapter
-            .chat_completions(openai_req, request_id)
-            .await?;
-        let data = match openai_result.data {
-            ChatOutput::Json(json) => response::from_chat_completion_bytes(&json)
-                .map_err(|e| AnthropicCompatError::Internal(format!("json error: {}", e)))?,
-            ChatOutput::Stream { .. } => {
-                return Err(AnthropicCompatError::Internal(
-                    "unexpected stream response for non-streaming request".to_string(),
-                ));
-            }
-        };
-        Ok(ChatResult {
-            data,
-            account_id: openai_result.account_id,
-        })
-    }
-
-    /// POST /v1/messages (流式)
-    ///
-    /// 将 Anthropic 请求映射为 OpenAI 请求，返回 Anthropic 格式的 SSE 字节流。
-    pub async fn messages_stream(
-        &self,
-        body: &[u8],
-        request_id: &str,
-    ) -> Result<ChatResult<StreamResponse>, AnthropicCompatError> {
-        debug!(target: "anthropic_compat", "收到流式 messages 请求");
-        let openai_body = request::to_openai_request(body)?;
-        let chat_req: ChatCompletionsRequest = serde_json::from_slice(&openai_body)
-            .map_err(|e| AnthropicCompatError::Internal(format!("json error: {}", e)))?;
+        let chat_req = request::to_chat_completions_request(body)?;
         let result = self
             .openai_adapter
             .chat_completions(chat_req, request_id)
             .await?;
-        let (input_tokens, openai_stream) = match result.data {
+        let data = match result.data {
             ChatOutput::Stream {
                 stream,
                 input_tokens,
-            } => (input_tokens, stream),
-            ChatOutput::Json(_) => {
-                return Err(AnthropicCompatError::Internal(
-                    "unexpected json response for streaming request".to_string(),
-                ));
+            } => {
+                AnthropicOutput::Stream(response::from_chat_completion_stream(stream, input_tokens))
+            }
+            ChatOutput::Json(json) => {
+                let anthropic_json = response::from_chat_completion_bytes(&json)
+                    .map_err(|e| AnthropicCompatError::Internal(format!("json error: {}", e)))?;
+                AnthropicOutput::Json(anthropic_json)
             }
         };
-        let data = response::from_chat_completion_stream(openai_stream, input_tokens);
         Ok(ChatResult {
             data,
             account_id: result.account_id,

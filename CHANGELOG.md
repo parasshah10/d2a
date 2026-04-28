@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   内部根据 `stream` 字段自动分流到 SSE 流或 JSON 聚合
 - **移除中间结构体**：删除 `AdapterRequest` 和 `prepare` 函数，
   `ChatCompletionsRequest` 贯穿 normalize → tools → prompt → resolver → 分流全管道
+- **Anthropic 请求转换直达**：`to_chat_completions_request()` 直接将 Anthropic 类型构造为
+  `ChatCompletionsRequest` 结构体，不再经过 `serde_json::Value` → JSON bytes → `serde_json::from_slice` 的中间序列化
+- **Anthropic 消息入口统一**：合并 `messages()` / `messages_stream()` 为单一 `messages()` 方法，
+  新增 `AnthropicOutput` 枚举（`Stream` / `Json`），与 `ChatOutput` 对称；
+  handler 不再提前解析 `stream` 字段
 - **`ChatCompletionRequest` 重命名**：`ChatCompletionRequest` → `ChatCompletionsRequest`，
   命名对齐实际端点路径
 - **ChatOutput 扩展**：`Stream` 变体携带 `input_tokens`，anthropic 流式路径无需再手动调用内部管道
