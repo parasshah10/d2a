@@ -236,7 +236,6 @@ flowchart TB
     classDef ds_core fill:#eef2ff,stroke:#3964fe,stroke-width:2.5px,color:#1e40af,rx:10,ry:10
     classDef openai_adapter fill:#e6f7f3,stroke:#0a9e7b,stroke-width:2.5px,color:#065f46,rx:10,ry:10
     classDef step fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#334155,rx:6,ry:6
-    classDef output fill:#fff7ed,stroke:#f97316,stroke-width:2.5px,color:#c2410c,rx:10,ry:10
 
     subgraph RQ ["请求处理"]
         direction TB
@@ -246,7 +245,7 @@ flowchart TB
         Q4["ChatML 提示词构建"]:::step
         Q5["模型映射 + 能力开关"]:::step
         Q6["限流重试<br/>指数退避 1s→2s→4s→8s→16s"]:::step
-        Q7["ChatRequest → ds_core"]:::output
+        Q7["ChatRequest"]:::ds_core
     end
 
     subgraph RS1 ["非流式响应"]
@@ -286,7 +285,6 @@ flowchart TB
     classDef oai fill:#e6f7f3,stroke:#0a9e7b,stroke-width:2.5px,color:#065f46,rx:10,ry:10
     classDef anth fill:#fdf0ec,stroke:#d07354,stroke-width:2.5px,color:#7c3a2a,rx:10,ry:10
     classDef step fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#334155,rx:6,ry:6
-    classDef output fill:#fff7ed,stroke:#f97316,stroke-width:2.5px,color:#c2410c,rx:10,ry:10
 
     subgraph RQ ["请求处理"]
         direction TB
