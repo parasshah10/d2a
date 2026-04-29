@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.2.5] - 2026-04-29
 
+### Fixed
+- **文件上传错误处理分层**：历史文件（`EMPTY.txt`）上传失败时回退为完整 prompt 内联发送，
+  不再静默丢失上下文；外部文件上传失败直接返回错误，不再静默跳过
+
 ### Added
 - **Prompt 注入调研文档**：[`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md)，
   记录 DeepSeek 网页端原生标签（`<｜User｜>` / `<｜Assistant｜>` 等）的分析与注入策略调研过程

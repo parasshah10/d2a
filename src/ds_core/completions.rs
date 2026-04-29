@@ -206,6 +206,8 @@ impl Completions {
 
         // 4. 上传文件：先历史文件，再外部文件（对话阅读顺序）
         let mut ref_file_ids: Vec<String> = Vec::new();
+        // 历史文件上传失败时退回到完整 prompt 内联发送
+        let mut history_upload_failed = false;
 
         if !history_content.is_empty() {
             match self
@@ -222,8 +224,9 @@ impl Completions {
                 Err(e) => {
                     log::warn!(
                         target: "ds_core::accounts",
-                        "req={} 历史文件上传失败: {}", request_id, e
+                        "req={} 历史文件上传失败，退回内联发送: {}", request_id, e
                     );
+                    history_upload_failed = true;
                 }
             }
         }
@@ -245,6 +248,10 @@ impl Completions {
                         target: "ds_core::accounts",
                         "req={} 外部文件上传失败 ({}): {}", request_id, file.filename, e
                     );
+                    return Err(CoreError::ProviderError(format!(
+                        "外部文件上传失败 ({}): {}",
+                        file.filename, e
+                    )));
                 }
             }
         }
@@ -258,18 +265,24 @@ impl Completions {
             "req={} completion PoW 计算完成", request_id
         );
 
+        // 6. 发起 completion（历史文件上传失败时退回到完整 prompt 内联发送）
+        let completion_prompt = if history_upload_failed {
+            &req.prompt
+        } else {
+            &inline_prompt
+        };
+
         log::trace!(
             target: "ds_core::accounts",
-            "req={} completion 请求: ref_file_ids={:?}, prompt=\n{}\n---历史文件内容---\n{}",
-            request_id, ref_file_ids, inline_prompt, history_content
+            "req={} completion 请求: ref_file_ids={:?}, history_fallback={}, prompt=\n{}\n---历史文件内容---\n{}",
+            request_id, ref_file_ids, history_upload_failed, completion_prompt, history_content
         );
 
-        // 6. 发起 completion
         let payload = CompletionPayload {
             chat_session_id: session_id.clone(),
             parent_message_id: None,
             model_type: req.model_type.clone(),
-            prompt: inline_prompt,
+            prompt: completion_prompt.clone(),
             ref_file_ids,
             thinking_enabled: req.thinking_enabled,
             search_enabled: req.search_enabled,

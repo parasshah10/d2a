@@ -90,11 +90,10 @@ src/
 - `config.example.toml` — authoritative configuration reference (all fields documented with examples)
 - `examples/adapter_cli.rs` + `examples/adapter_cli-script.txt` — unified protocol debug CLI (modes: `chat`, `raw`, `compare`, `concurrent N`, `status`, `models`/`model <id>`)
 - `examples/adapter_cli/` — JSON request samples (basic_chat, reasoning, reasoning_search, stop, stream, tool_call, tool_call_multi_turn, tool_call_parallel, tool_call_required, web_search)
-- `py-e2e-tests/` — Python e2e test suite using pytest + uv:
-  - `openai_endpoint/` — OpenAI-compatible `/v1/chat/completions` tests
-  - `anthropic_endpoint/` — Anthropic-compatible `/v1/messages` tests
-  - `config.toml` — e2e-specific server config (port 5317)
-  - `conftest.py` — shared fixtures (server startup, HTTP client)
+- `py-e2e-tests/` — Python e2e test suite (pytest + uv, no extra deps needed):
+  - `scenarios/{basic,repair}/openai|anthropic/*.json` — scenario-driven JSON test cases with request params + check rules
+  - `runner.py` — single-run entry point; `stress_runner.py` — multi-iteration load testing
+  - `config.toml` — e2e-specific server config (port 5317), `conftest.py` — shared fixtures
 
 ### Facade Module Pattern
 
@@ -189,6 +188,9 @@ The adapter maps OpenAI request fields to DeepSeek internal flags in `request/re
 - **Reasoning**: `reasoning_effort` defaults to `"high"` if absent (reasoning is on by default). Explicitly set to `"none"` to disable.
 - **Web search**: `web_search_options` enables search when present; omitted by default (search off).
 
+### Prompt Injection Strategy
+The adapter converts OpenAI ChatML (`<|im_start|>` / `<|im_end|>`) into DeepSeek native tags (`<｜User｜>` / `<｜Assistant｜>` / `<｜Tool｜>` etc.) and embeds system instructions (tool definitions, format requirements) inside a `<think>` block. This approach was validated through iterative testing against claude-3.5-sonnet system prompt patterns — see `docs/deepseek-prompt-injection.md` for the full research history and alternative approaches considered.
+
 ### Anthropic Compatibility Layer
 The Anthropic compat layer (`anthropic_compat/`) is a **pure protocol translator** that sits on top of `openai_adapter`:
 - Does NOT directly access `ds_core` — all data flows through `OpenAIAdapter`
@@ -271,10 +273,12 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 | Example request JSON | `examples/adapter_cli/` | Pre-built ChatCompletionsRequest samples (chat, stream, stop, reasoning, web_search, tool_call, etc.) |
 | Scripted regression test | `just adapter-cli -- source examples/adapter_cli-script.txt` | Runs all JSON samples in sequence |
 | Stress test scripts | `py-e2e-tests/stress_test_tools_openai.py`, `py-e2e-tests/stress_test_tools_anthropic.py` | Load testing for OpenAI and Anthropic endpoints |
+| e2e scenario test framework | `py-e2e-tests/runner.py`, `py-e2e-tests/scenarios/` | JSON-driven scenarios with checks; `stress_runner.py` for load testing |
 | CI pipeline | `.github/workflows/ci.yml` | `cargo check + clippy + fmt + audit + machete` and `cargo test` |
 | Release workflow | `.github/workflows/release.yml` | Tag `v*` triggers multi-platform build (8 targets, 4 OS) + CHANGELOG release notes |
 | Claude config | `AGENTS.md` | Agent delegation patterns for this repo |
 | Code style / logging | `docs/code-style.md`, `docs/logging-spec.md` | Comments, naming, targets, levels |
+| Prompt injection strategy | `docs/deepseek-prompt-injection.md` | DeepSeek native tags, claude-3.5-sonnet system prompt research |
 | API reference | `docs/deepseek-api-reference.md` | DeepSeek endpoint details |
 
 ## Conventions
