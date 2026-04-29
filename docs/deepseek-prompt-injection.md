@@ -5,7 +5,7 @@
 | `<think></think>`                                      | false    | **true**   | **推理链容器**（Chain-of-Thought）。DeepSeek-R1 等推理模型在生成最终回答前，会在此标签内输出内部思考过程，对外通常折叠显示。 |
 | `<｜fim▁hole｜>` / `<｜fim▁begin｜>` / `<｜fim▁end｜>` | false    | **true**   | **Fill-In-the-Middle（代码中间补全）**。`begin` 和 `end` 标记前缀/后缀代码块，`hole` 标记需要模型填充的中间位置。 |
 | `<｜User｜>` / `<｜Assistant｜>`                       | false    | **true**   | **角色锚点**。替代传统的 `User:` / `Assistant:` 文本前缀，作为更鲁棒的结构化分隔符，防止角色混淆攻击（prompt injection）。 |
-| `<|EOT|>`                                              | **true** | **true**   | **End of Turn**。标记当前轮次（turn）的结束，是模型停止生成的信号之一。 |
+| `<\|EOT\|>`                                              | **true** | **true**   | **End of Turn**。标记当前轮次（turn）的结束，是模型停止生成的信号之一。 |
 | `<｜tool▁calls▁begin｜>` / `<｜tool▁calls▁end｜>`      | false    | **true**   | **工具调用列表容器**。包裹本轮所有需要调用的工具。           |
 | `<｜tool▁call▁begin｜>` / `<｜tool▁call▁end｜>`        | false    | **true**   | **单个工具调用容器**。内部通常包含 JSON 格式的函数名和参数。 |
 | `<｜tool▁outputs▁begin｜>` / `<｜tool▁outputs▁end｜>`  | false    | **true**   | **工具返回结果列表容器**。                                   |
