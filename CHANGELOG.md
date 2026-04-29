@@ -4,9 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.5] - 2026-04-28
+## [0.2.5] - 2026-04-29
+
+### Added
+- **Prompt 注入调研文档**：[`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md)，
+  记录 DeepSeek 网页端原生标签（`<｜User｜>` / `<｜Assistant｜>` 等）的分析与注入策略调研过程
 
 ### Changed
+- **Prompt 格式重构**：从 ChatML（`<|im_start|>` / `<|im_end|>`）迁移到 DeepSeek 原生标签格式
+  （`<｜{Role}｜>{content}\n`），`role_tag` 改为首字母大写而非映射表
+- **Reminder 注入方式变更**：从独立的 `<|im_start|>reminder` 块改为嵌入最后一个
+  `<｜Assistant｜>` 后的不闭合 `<think>` 块中，前缀 `我被系统提醒如下信息:`
+- **工具调用指令统一**：`(工具调用请使用 <tool_call> 和 </tool_call> 包裹。)`
+  从追加入 user/tool 消息改为统一放在 `<think>` 块末尾
+- **移除尾部 assistant**：不再追加 `<|im_start|>assistant`，模型生成由 `<think>`
+  块中的 reminder 引导触发
+- **历史拆分解析适配**：`parse_chatml_blocks` → `parse_native_blocks`，
+  基于 `<｜Role｜>` 标签解析，内容截止到下一个 `<｜` 或 EOF，无需闭合标签
+- **README / README.en.md 同步**：更新 Prompt 注入策略说明及数据管道 mermaid 图中的标签描述
 - **请求管道统一**：`OpenAIAdapter` 对外只暴露一个 `chat_completions(req: ChatCompletionsRequest)` 方法，
   内部根据 `stream` 字段自动分流到 SSE 流或 JSON 聚合
 - **移除中间结构体**：删除 `AdapterRequest` 和 `prepare` 函数，

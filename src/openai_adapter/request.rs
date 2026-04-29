@@ -1,8 +1,8 @@
 //! OpenAI 请求解析 —— 将 OpenAI ChatCompletion 请求降级为 ds_core::ChatRequest
 //!
 //! 当前限制：
-//! - 多轮对话通过 ChatML 格式压缩为单个 prompt 字符串
-//! - tool 定义以独立 reminder 块注入到 assistant 前面
+//! - 多轮对话通过 DeepSeek 原生标签格式压缩为单个 prompt 字符串
+//! - tool 定义嵌入到最后一个 `<｜Assistant｜>` 后的不闭合 `<think>` 块中
 
 pub(crate) mod normalize;
 pub(crate) mod prompt;
@@ -501,10 +501,10 @@ mod tests {
         assert!(matches!(err, OpenAIAdapterError::BadRequest(_)));
     }
 
-    // tools injection 位置：追加到最后一个 user message
+    // tools injection 位置：嵌入到最后一个 <｜Assistant｜> 后的 <think> 块中
 
     #[test]
-    fn tools_as_reminder_before_assistant() {
+    fn tools_injected_into_think_block() {
         let body = serde_json::json!({
             "model": "deepseek-default",
             "messages": [
@@ -518,21 +518,19 @@ mod tests {
         });
         let req = parse_json(body).unwrap();
         let prompt = &req.prompt;
-        // 工具定义应在独立的 reminder 块中，紧邻 assistant 前面
+        // 工具定义应注入到最后一个 <｜Assistant｜><think> 块中
         assert!(
-            !prompt.contains("<|im_start|>user\n第二个问题\n\n你可以使用以下工具"),
-            "工具定义不应追加到 user 消息中"
+            prompt.contains("<｜Assistant｜><think>我被系统提醒如下信息:"),
+            "工具定义应注入到 <think> 块中"
         );
+        assert!(prompt.contains("## 工具调用"));
+        assert!(prompt.contains("calc"));
+        // <think> 块应在最后，位于最后的 user 消息之后
+        let think_pos = prompt.find("<｜Assistant｜><think>").unwrap();
+        let last_user_pos = prompt.rfind("第二个问题").unwrap();
         assert!(
-            prompt.contains("<|im_start|>reminder\n# 重要提醒"),
-            "工具定义应在独立的 reminder 块中"
-        );
-        // reminder 块应在最后的 assistant 前缀前面
-        let reminder_pos = prompt.find("<|im_start|>reminder").unwrap();
-        let assistant_pos = prompt.rfind("<|im_start|>assistant").unwrap();
-        assert!(
-            reminder_pos < assistant_pos,
-            "reminder 块应在最后的 assistant 前面"
+            think_pos > last_user_pos,
+            "<think> 块应在最后的 user 消息之后"
         );
     }
 

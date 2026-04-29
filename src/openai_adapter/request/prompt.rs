@@ -1,19 +1,17 @@
-//! Prompt 构建 —— 将 OpenAI messages 转换为 ChatML 格式字符串
+//! Prompt 构建 —— 将 OpenAI messages 转换为 DeepSeek 原生标签格式
 //!
-//! 若请求包含工具定义或行为指令，会以独立的 `<|im_start|>reminder` 块
-//! 插入到 `<|im_start|>assistant` 之前，确保工具上下文始终紧邻模型生成位置。
+//! 使用 `<｜System｜>`、`<｜User｜>`、`<｜Assistant｜>`、`<｜Tool｜>` 作为角色标记。
+//! 若请求包含工具定义或行为指令，会嵌入到最后一个 `<｜Assistant｜>` 后的
+//! 不闭合 `<think>` 块中，确保工具上下文始终紧邻模型生成位置。
 
 use super::tools::ToolContext;
 use crate::openai_adapter::response::{TOOL_CALL_END, TOOL_CALL_START};
 use crate::openai_adapter::types::{ChatCompletionsRequest, ContentPart, Message, MessageContent};
 
-const IM_START: &str = "<|im_start|>";
-const IM_END: &str = "<|im_end|>";
-
-/// 构建 ChatML 格式的 prompt 字符串
-/// 顺序: [system] [历史 user/tool/assistant 轮次...] [reminder] [最后一轮 user/tool] <|im_start|>assistant
+/// 构建 DeepSeek 原生标签格式的 prompt 字符串
+/// 顺序: [system] [历史 user/tool/assistant 轮次...] <｜Assistant｜><think>[reminder]
 pub fn build(req: &ChatCompletionsRequest, tool_ctx: &ToolContext) -> String {
-    let msg_parts: Vec<String> = req.messages.iter().map(format_message).collect();
+    let mut parts: Vec<String> = req.messages.iter().map(format_message).collect();
 
     let mut tool_sections: Vec<String> = Vec::new();
 
@@ -27,13 +25,13 @@ pub fn build(req: &ChatCompletionsRequest, tool_ctx: &ToolContext) -> String {
         tool_sections.push(format!("### 调用指令\n{}", text));
     }
 
-    let mut sections: Vec<String> = Vec::new();
+    let mut reminder_parts: Vec<String> = Vec::new();
 
     if !tool_sections.is_empty() {
-        sections.push(format!("## 工具调用\n{}", tool_sections.join("\n\n")));
+        reminder_parts.push(format!("## 工具调用\n{}", tool_sections.join("\n\n")));
     }
 
-    // response_format 降级：将格式约束注入到 reminder 块中
+    // response_format 降级：将格式约束注入到 <think> 块中
     if let Some(rf) = &req.response_format {
         let text = match rf.ty.as_str() {
             "json_object" => {
@@ -59,39 +57,31 @@ pub fn build(req: &ChatCompletionsRequest, tool_ctx: &ToolContext) -> String {
             _ => format!("请以 {} 格式输出。", rf.ty),
         };
         if !text.is_empty() {
-            sections.push(format!("## 输出格式\n{}", text));
+            reminder_parts.push(format!("## 输出格式\n{}", text));
         }
     }
 
-    // 找到最后一个 user/tool 消息的位置，reminder 插入在它前面
-    let insert_pos = req
-        .messages
-        .iter()
-        .rposition(|m| m.role == "user" || m.role == "tool")
-        .unwrap_or(msg_parts.len());
-
-    let mut parts = Vec::with_capacity(msg_parts.len() + 2);
-    parts.extend(msg_parts[..insert_pos].iter().cloned());
-    if !sections.is_empty() {
-        let extra = sections.join("\n\n");
-        parts.push(format!(
-            "{IM_START}reminder\n# 重要提醒\n\n{extra}\n{IM_END}"
+    // 工具调用包裹指令
+    if tool_ctx.defs_text.is_some() {
+        reminder_parts.push(format!(
+            "(工具调用请使用 {TOOL_CALL_START} 和 {TOOL_CALL_END} 包裹。)"
         ));
     }
-    parts.extend(msg_parts[insert_pos..].iter().cloned());
-    if tool_ctx.defs_text.is_some() {
-        let instruction = format!("(工具调用请使用 {TOOL_CALL_START} 和 {TOOL_CALL_END} 包裹。)");
-        for part in parts.iter_mut().rev() {
-            if part.starts_with(&format!("{IM_START}user"))
-                || part.starts_with(&format!("{IM_START}tool"))
-            {
-                *part = part.replacen(IM_END, &format!("{instruction}\n{IM_END}"), 1);
-                break;
-            }
-        }
+
+    if !reminder_parts.is_empty() {
+        let reminder = format!("我被系统提醒如下信息:\n\n{}", reminder_parts.join("\n\n"));
+        parts.push(format!("<｜Assistant｜><think>{}\n", reminder));
     }
-    parts.push(format!("{IM_START}assistant"));
-    parts.join("\n")
+
+    parts.join("")
+}
+
+fn role_tag(role: &str) -> String {
+    let mut r = role.to_string();
+    if let Some(c) = r.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    format!("<｜{}｜>", r)
 }
 
 fn format_message(msg: &Message) -> String {
@@ -101,7 +91,8 @@ fn format_message(msg: &Message) -> String {
         "function" => format_function(msg),
         _ => format_generic(msg),
     };
-    format!("{IM_START}{}\n{}\n{IM_END}\n\n\n", msg.role, body)
+    let tag = role_tag(&msg.role);
+    format!("{}{}\n", tag, body)
 }
 
 fn format_generic(msg: &Message) -> String {

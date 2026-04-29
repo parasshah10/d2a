@@ -138,6 +138,8 @@ The Anthropic compatibility layer uses the same model IDs via `/anthropic/v1/mes
 
 Requires Rust 1.95.0+ (see `rust-toolchain.toml`).
 
+> **Prompt Injection Strategy**: This project converts OpenAI message formats into DeepSeek native tags (`<｜User｜>` / `<｜Assistant｜>` / `<｜Tool｜〉`, etc.) and embeds a `<think>` block to guide the model's reasoning chain, injecting tool definitions and formatting instructions. For detailed research and implementation, see [`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md). If you have better ideas or findings, feel free to open an issue or PR.
+
 ```bash
 # One-pass check (check + clippy + fmt + audit + unused deps)
 just check
@@ -243,7 +245,7 @@ flowchart TB
         Q1["ChatCompletionsRequest"]:::openai_adapter
         Q2["Validation + Defaults"]:::step
         Q3["Tool Extraction + Prompt Injection"]:::step
-        Q4["ChatML Prompt Building"]:::step
+        Q4["DeepSeek Native Tag Prompt Building"]:::step
         Q5["Model Resolution + Feature Toggles"]:::step
         Q6["Rate Limit Retry<br/>Exponential Backoff 1s→2s→4s→8s→16s"]:::step
         Q7["ChatRequest → ds_core"]:::output

@@ -22,8 +22,8 @@ pub(crate) struct ActiveSession {
     pub(crate) message_id: i64,
 }
 
-const IM_START: &str = "<|im_start|>";
-const IM_END: &str = "<|im_end|>";
+const TAG_START: &str = "<｜";
+const TAG_END: &str = "｜>";
 const SESSION_HISTORY_FILE: &str = "EMPTY.txt";
 const UPLOAD_POLL_INTERVAL_MS: u64 = 2000;
 const UPLOAD_POLL_MAX_RETRIES: usize = 30; // 60s 总超时
@@ -497,28 +497,38 @@ struct ChatBlock {
     content: String,
 }
 
-/// 解析 ChatML 格式的 prompt 为结构化块
-fn parse_chatml_blocks(prompt: &str) -> Vec<ChatBlock> {
+fn role_tag(role: &str) -> String {
+    let mut r = role.to_string();
+    if let Some(c) = r.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    format!("<｜{}｜>", r)
+}
+
+/// 解析 DeepSeek 原生标签格式的 prompt 为结构化块
+///
+/// 格式: `<｜Role｜>content\n`（无闭合标签），内容截止到下一个 `<｜` 或字符串末尾。
+fn parse_native_blocks(prompt: &str) -> Vec<ChatBlock> {
     let mut blocks = Vec::new();
     let mut pos = 0;
-    while let Some(start_idx) = prompt[pos..].find(IM_START) {
+    while let Some(start_idx) = prompt[pos..].find(TAG_START) {
         let abs_start = pos + start_idx;
-        let role_start = abs_start + IM_START.len();
-        let role_end = match prompt[role_start..].find('\n') {
+        let role_start = abs_start + TAG_START.len();
+        let role_end = match prompt[role_start..].find(TAG_END) {
             Some(i) => role_start + i,
             None => break,
         };
-        let role = prompt[role_start..role_end].trim().to_string();
-        let content_start = role_end + 1;
-        let end_marker = match prompt[content_start..].find(IM_END) {
+        let role = prompt[role_start..role_end].trim().to_lowercase();
+        let content_start = role_end + TAG_END.len();
+        let content_end = match prompt[content_start..].find(TAG_START) {
             Some(i) => content_start + i,
-            None => break,
+            None => prompt.len(),
         };
-        let content = prompt[content_start..end_marker]
+        let content = prompt[content_start..content_end]
             .trim_end_matches('\n')
             .to_string();
         blocks.push(ChatBlock { role, content });
-        pos = end_marker + IM_END.len();
+        pos = content_end;
     }
     blocks
 }
@@ -526,10 +536,10 @@ fn parse_chatml_blocks(prompt: &str) -> Vec<ChatBlock> {
 /// 拆分 prompt 为 inline_prompt 和 history_content
 ///
 /// 找到最后一个 user/tool 块，以其为界：
-/// - inline = 最后一个 user/tool 块 → 末尾
+/// - inline = 最后一个 user/tool 块 → 末尾（含其后的 assistant/<think> 等）
 /// - history = 其余所有块，包装为 [file content end] … [file content begin] 格式上传
 fn split_history_prompt(prompt: &str) -> (String, String) {
-    let blocks = parse_chatml_blocks(prompt);
+    let blocks = parse_native_blocks(prompt);
     let split_idx = match blocks
         .iter()
         .rposition(|b| b.role == "user" || b.role == "tool")
@@ -540,29 +550,17 @@ fn split_history_prompt(prompt: &str) -> (String, String) {
 
     let mut inline = String::new();
     for block in &blocks[split_idx..] {
-        inline.push_str(IM_START);
-        inline.push_str(&block.role);
-        inline.push('\n');
+        inline.push_str(&role_tag(&block.role));
         inline.push_str(&block.content);
         inline.push('\n');
-        inline.push_str(IM_END);
-        inline.push_str("\n\n\n");
-    }
-    // 补回 parse_chatml_blocks 无法解析的尾部 <|im_start|>assistant（没有 IM_END）
-    if prompt.trim().ends_with("<|im_start|>assistant") {
-        inline.push_str("<|im_start|>assistant\n");
     }
 
     let mut history = String::new();
     history.push_str("[file content end]\n\n");
     for block in &blocks[..split_idx] {
-        history.push_str(IM_START);
-        history.push_str(&block.role);
-        history.push('\n');
+        history.push_str(&role_tag(&block.role));
         history.push_str(&block.content);
         history.push('\n');
-        history.push_str(IM_END);
-        history.push_str("\n\n\n");
     }
     history.push_str("[file name]: IGNORE\n[file content begin]\n");
 
