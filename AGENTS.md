@@ -334,19 +334,17 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 # Setup (do not commit config.toml)
 cp config.example.toml config.toml
 
+# Enable pre-commit hook (check + clippy + fmt + audit + machete + cargo test)
+git config core.hooksPath .githooks
+
 # One-pass check (check + clippy + fmt + audit + unused deps)
 just check
 
-# Pre-commit hook runs check + clippy + fmt + audit + machete + cargo test --lib
-# (see .git/hooks/pre-commit — matches CI order)
-
+# Run the HTTP server with basic logging
+just serve
+RUST_LOG=info just serve
 # Trace through the entire SSE pipeline
 RUST_LOG=adapter=trace,ds_core::accounts=debug,info just serve
-
-# Run the HTTP server
-just serve
-RUST_LOG=debug just serve
-
 # Module-level logging filters
 RUST_LOG=ds_core::accounts=debug,ds_core::client=warn,info just serve
 RUST_LOG=adapter=debug,anthropic_compat=debug just serve

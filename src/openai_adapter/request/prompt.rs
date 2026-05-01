@@ -1,6 +1,6 @@
 //! Prompt 构建 —— 将 OpenAI messages 转换为 DeepSeek 原生标签格式
 //!
-//! 使用 `<｜System｜>`、`<｜User｜>`、`<｜Assistant｜>`、`<｜Tool｜>` 作为角色标记。
+//! 使用 `<｜System｜>`、`<｜User｜>`、`<｜Assistant｜>`、`<｜tool▁outputs▁begin｜>` 作为角色标记。
 //! 若请求包含工具定义或行为指令，会嵌入到最后一个 `<｜Assistant｜>` 后的
 //! 不闭合 `<think>` 块中，确保工具上下文始终紧邻模型生成位置。
 
