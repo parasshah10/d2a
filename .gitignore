@@ -22,6 +22,7 @@ data/
 **/tmp.*
 **/tmp_*
 **/tmp
+log.txt
 
 # Web (frontend)
 web/node_modules
