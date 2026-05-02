@@ -209,7 +209,43 @@ First visit guides you to set an admin password (bcrypt hashed), login issues a 
 
 ## Development
 
-Requires Rust 1.95.0+ (see `rust-toolchain.toml`).
+Requires Rust 1.95.0+ (see `rust-toolchain.toml`) and Node.js 18+ (for web panel development).
+
+### Build from Source
+
+```bash
+# 1. Build web frontend (embedded into binary at compile time, must build before release)
+cd web && npm install && npm run build && cd ..
+
+# 2. Build release binary (web panel embedded via rust-embed)
+cargo build --release
+
+# 3. Run
+./target/release/ds-free-api
+```
+
+> **Dev mode**: When `web/dist/` directory exists, the server reads from the filesystem first (supports frontend hot-reload);
+> otherwise it falls back to compile-time embedded assets. During development, run `npm run dev` (Vite HMR) alongside `just serve`.
+
+### Docker Deployment
+
+```bash
+# Using docker-compose (recommended)
+docker compose up -d
+
+# Or build manually
+docker build -t ds-free-api .
+docker run -d \
+  -p 5317:5317 \
+  -v ./config.toml:/app/config.toml:ro \
+  -v ds-data:/app/data \
+  -e RUST_LOG=info \
+  ds-free-api
+```
+
+The Docker image uses a three-stage build: Node builds the web frontend → Rust compiles with embedded web assets → minimal runtime image (`debian:bookworm-slim`). The final image contains only the single binary + config file.
+
+Persistent data (`admin.json`, `api_keys.json`, `stats.json`) is stored in the `/app/data` volume.
 
 > **Prompt Injection Strategy**: This project converts OpenAI message formats into DeepSeek native tags (`<｜User｜>` / `<｜Assistant｜>` / `<｜Tool｜〉`, etc.) and embeds a `<think>` block to guide the model's reasoning chain, injecting tool definitions and formatting instructions. For detailed research and implementation, see [`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md). If you have better ideas or findings, feel free to open an issue or PR.
 
