@@ -74,7 +74,7 @@ Only required fields are shown below. One account equals one concurrent session.
 
 ```toml
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"  # Change to 0.0.0.0 to expose to public network
 port = 5317
 
 # CORS allowed origins (default ["http://localhost:5317"])

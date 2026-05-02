@@ -73,7 +73,7 @@ RUST_LOG=debug ./ds-free-api
 
 ```toml
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"  # 对公网开放请改为 0.0.0.0
 port = 5317
 
 # CORS 允许的 Origin 列表（默认 ["http://localhost:5317"]）
