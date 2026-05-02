@@ -1,34 +1,24 @@
-# ── Stage 0: Build web frontend ────────────────────────────────────────
-FROM node:22-bookworm-slim AS web-builder
-WORKDIR /build/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-COPY web/ ./
-RUN npm run build
+# ── Dockerfile ───────────────────────────────────────────────────────────
+# 本地交叉编译 + Docker 打包（Mac ARM → x86 Linux，~2 分钟）
+#
+# 用法：
+#   cargo zigbuild --release --target x86_64-unknown-linux-gnu
+#   cd web && npm install && npm run build && cd ..
+#   docker build --platform linux/amd64 -t ds-free-api .
+#   docker save ds-free-api | gzip > ds-free-api.tar.gz
+#
+# 服务器原生构建 / CI：
+#   直接在 x86 服务器上运行上述命令（无需交叉编译，去掉 --platform 参数）
+#   或使用 GitHub Actions 自动构建（见 .github/workflows/）
 
-# ── Stage 1: Build Rust binary (with embedded web) ──────────────────────
-FROM rust:1.95.0-bookworm AS rust-builder
-WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-# Create dummy main to cache dependencies
-RUN mkdir src && echo 'fn main(){}' > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-# Now copy real source + embedded web assets
-COPY src/ src/
-COPY --from=web-builder /build/web/dist /build/web/dist
-COPY rust-toolchain.toml ./
-# Rebuild with real code (dependency layer cached, web assets embedded)
-RUN touch src/main.rs && cargo build --release
-
-# ── Stage 2: Runtime ────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-COPY --from=rust-builder /build/target/release/ds-free-api /app/ds-free-api
+COPY target/x86_64-unknown-linux-gnu/release/ds-free-api /app/ds-free-api
+COPY web/dist /app/web/dist
 COPY config.example.toml /app/config.example.toml
 
-# Data volume for admin.json, api_keys.json
 VOLUME /app/data
 
 ENV RUST_LOG=info

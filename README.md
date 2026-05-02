@@ -227,22 +227,27 @@ cargo build --release
 ### Docker 部署
 
 ```bash
-# 使用 docker-compose（推荐）
-docker compose up -d
+# 1. 交叉编译 Rust 二进制（Mac ARM → x86 Linux，~1.5 分钟）
+cargo zigbuild --release --target x86_64-unknown-linux-gnu
 
-# 或手动构建
-docker build -t ds-free-api .
-docker run -d \
-  -p 5317:5317 \
-  -v ./config.toml:/app/config.toml:ro \
-  -v ds-data:/app/data \
-  -e RUST_LOG=info \
-  ds-free-api
+# 2. 构建前端
+cd web && npm install && npm run build && cd ..
+
+# 3. 打包 Docker 镜像（~1 秒）
+docker build --platform linux/amd64 -t ds-free-api .
+
+# 4. 导出并传输到服务器
+docker save ds-free-api | gzip > ds-free-api.tar.gz
+scp ds-free-api.tar.gz user@server:/tmp/
+
+# 5. 服务器加载并启动
+ssh user@server
+docker load < /tmp/ds-free-api.tar.gz
+docker compose up -d    # 数据卷自动保留
 ```
 
-Docker 镜像采用三阶段构建：Node 构建 Web → Rust 编译（嵌入 Web 资源） → 精简运行镜像（`debian:bookworm-slim`），最终镜像仅包含单个二进制 + 配置文件。
-
-持久化数据（`admin.json`、`api_keys.json`、`stats.json`）存储在 `/app/data` 卷中。
+> 服务器原生 x86 环境可直接在服务器上运行上述命令（去掉 `--platform` 参数），速度更快。
+> Docker 镜像仅包含预编译二进制 + 前端资源，无需容器内编译。
 
 > **Prompt 注入策略**：本项目通过将 OpenAI 消息格式转换为 DeepSeek 原生标签（`<｜User｜>` / `<｜Assistant｜>` / `<｜tool▁outputs▁begin｜>` 等）并嵌入 `<think>` 块来引导模型的思考以注入工具定义和格式指令。详细实现思路与调研过程见 [`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md)。如果你有更好的发现或改进思路，欢迎提 issue 或 PR。
 

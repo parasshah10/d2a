@@ -230,22 +230,27 @@ cargo build --release
 ### Docker Deployment
 
 ```bash
-# Using docker-compose (recommended)
-docker compose up -d
+# 1. Cross-compile Rust binary (Mac ARM → x86 Linux, ~1.5 min)
+cargo zigbuild --release --target x86_64-unknown-linux-gnu
 
-# Or build manually
-docker build -t ds-free-api .
-docker run -d \
-  -p 5317:5317 \
-  -v ./config.toml:/app/config.toml:ro \
-  -v ds-data:/app/data \
-  -e RUST_LOG=info \
-  ds-free-api
+# 2. Build web frontend
+cd web && npm install && npm run build && cd ..
+
+# 3. Package Docker image (~1s)
+docker build --platform linux/amd64 -t ds-free-api .
+
+# 4. Export and transfer to server
+docker save ds-free-api | gzip > ds-free-api.tar.gz
+scp ds-free-api.tar.gz user@server:/tmp/
+
+# 5. Load and start on server
+ssh user@server
+docker load < /tmp/ds-free-api.tar.gz
+docker compose up -d    # data volume is preserved
 ```
 
-The Docker image uses a three-stage build: Node builds the web frontend → Rust compiles with embedded web assets → minimal runtime image (`debian:bookworm-slim`). The final image contains only the single binary + config file.
-
-Persistent data (`admin.json`, `api_keys.json`, `stats.json`) is stored in the `/app/data` volume.
+> On native x86 servers, run the commands directly on the server (omit `--platform`) for faster builds.
+> The Docker image contains only the pre-compiled binary + web assets — no in-container compilation needed.
 
 > **Prompt Injection Strategy**: This project converts OpenAI message formats into DeepSeek native tags (`<｜User｜>` / `<｜Assistant｜>` / `<｜Tool｜〉`, etc.) and embeds a `<think>` block to guide the model's reasoning chain, injecting tool definitions and formatting instructions. For detailed research and implementation, see [`docs/deepseek-prompt-injection.md`](docs/deepseek-prompt-injection.md). If you have better ideas or findings, feel free to open an issue or PR.
 
