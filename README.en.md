@@ -28,8 +28,10 @@ A proxy that translates free DeepSeek web chat into standard OpenAI and Anthropi
 - **Tool calling ready**: Full OpenAI function calling with XML parsing + 3-layer self-repair pipeline (text → JSON → model fallback), covering 10+ malformed output patterns
 - **File upload ready**: Supports OpenAI `file` / `image_url` content parts and Anthropic `image` / `document` content blocks — inline data URLs are automatically uploaded to the DeepSeek session;
   HTTP URLs trigger web search mode so the model can directly access the link
+- **Web admin panel**: Built-in dashboard for account pool status, API key management, request logs, and config hot-reload
+- **Model aliases**: Custom model ID mapping (e.g. `deepseek-v4-flash` → `deepseek-default`) for broader client compatibility
 - **Rust implementation**: Single binary + single TOML config, native cross-platform performance
-- **Multi-account pool**: Most-idle-first rotation, horizontal scalability for concurrency
+- **Multi-account pool**: Most-idle-first rotation (DashMap lock-free reads), horizontal scalability for concurrency
 
 ## Quick Start
 
@@ -75,10 +77,11 @@ Only required fields are shown below. One account equals one concurrent session.
 host = "127.0.0.1"
 port = 5317
 
-# API tokens for authentication, leave empty to disable
-# [[server.api_tokens]]
-# token = "sk-your-token"
-# description = "Development"
+# CORS allowed origins (default ["http://localhost:5317"])
+# cors_origins = ["http://localhost:5317"]
+
+# API keys and admin password are configured via the Web admin panel (http://127.0.0.1:5317/admin)
+# First visit will guide you to set an admin password, then create/manage API keys in the panel
 
 # Email and/or mobile. Mobile currently appears to support only +86.
 [[accounts]]
@@ -113,15 +116,38 @@ Recommended temporary email: [tempmail.la](https://tempmail.la/) (some suffixes 
 
 ## API Endpoints
 
+### Public Endpoints
+
 | Method | Path                         | Description                                      |
 | ------ | ---------------------------- | ------------------------------------------------ |
 | GET    | `/`                          | Health check                                     |
+| GET    | `/health`                    | Health check (alias)                             |
 | POST   | `/v1/chat/completions`       | Chat completions (streaming + tool calling)      |
 | GET    | `/v1/models`                 | List models                                      |
 | GET    | `/v1/models/{id}`            | Get model details                                |
 | POST   | `/anthropic/v1/messages`     | Anthropic Messages API (streaming + tool calling)|
 | GET    | `/anthropic/v1/models`       | List models (Anthropic format)                   |
 | GET    | `/anthropic/v1/models/{id}`  | Get model details (Anthropic format)             |
+
+### Admin Endpoints (JWT Auth Required)
+
+| Method | Path                               | Description                  |
+| ------ | ---------------------------------- | ---------------------------- |
+| POST   | `/admin/api/setup`                 | Set admin password (first time) |
+| POST   | `/admin/api/login`                 | Admin login                  |
+| GET    | `/admin/api/status`                | Account pool status          |
+| GET    | `/admin/api/stats`                 | Request statistics           |
+| GET    | `/admin/api/models`                | Model list                   |
+| GET    | `/admin/api/config`                | Current config (masked)      |
+| GET    | `/admin/api/keys`                  | List API keys (masked)       |
+| POST   | `/admin/api/keys`                  | Create API key               |
+| DELETE | `/admin/api/keys/{key}`            | Delete API key               |
+| POST   | `/admin/api/accounts`             | Add account dynamically      |
+| DELETE | `/admin/api/accounts/{id}`         | Remove account dynamically   |
+| POST   | `/admin/api/accounts/{id}/relogin` | Manual re-login for account  |
+| POST   | `/admin/api/reload`                | Hot-reload config.toml accounts |
+| GET    | `/admin/api/logs`                  | Request logs                 |
+| GET    | `/admin/api/runtime-logs`          | Runtime logs                 |
 
 ## Model Mapping
 
@@ -133,6 +159,13 @@ Recommended temporary email: [tempmail.la](https://tempmail.la/) (some suffixes 
 | `deepseek-expert`  | Expert mode    |
 
 The Anthropic compatibility layer uses the same model IDs via `/anthropic/v1/messages`.
+
+Default aliases (customizable via `[deepseek.model_aliases]`):
+
+| Alias Model ID       | Maps to             |
+| -------------------- | ------------------- |
+| `deepseek-v4-flash`  | `deepseek-default`  |
+| `deepseek-v4-pro`    | `deepseek-expert`   |
 
 ### Feature Toggles
 
@@ -153,6 +186,26 @@ The Anthropic compatibility layer uses the same model IDs via `/anthropic/v1/mes
   {"type": "document", "source": {"type": "base64", "media_type": "text/plain", "data": "..."}}
   {"type": "image", "source": {"type": "url", "url": "https://example.com/img.jpg"}}
   ```
+
+## Web Admin Panel
+
+Visit `http://127.0.0.1:5317/admin` after starting the server:
+
+- **Dashboard**: Request statistics and account pool overview
+- **Accounts**: View/add/remove accounts, manual re-login for Error-state accounts
+- **API Keys**: Create/delete API keys, masked display
+- **Models**: Available model list and details
+- **Config**: Current runtime config (masked)
+- **Logs**: Recent request logs and runtime logs
+
+First visit guides you to set an admin password (bcrypt hashed), login issues a JWT (24h validity), and password reset revokes old tokens.
+
+## Security
+
+- **Admin panel**: JWT authentication + bcrypt password hashing + login failure rate limiting (5 failures → 5 min lockout)
+- **API access**: API keys created via admin panel (HashSet O(1) lookup)
+- **CORS**: Configurable allowed origin list, default `http://localhost:5317` only
+- **Sensitive data**: Account IDs masked in response headers, request bodies not logged, persisted files permission 0600
 
 ## Development
 

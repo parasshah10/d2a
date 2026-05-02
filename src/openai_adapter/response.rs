@@ -66,8 +66,11 @@ fn random_padding(len: usize) -> String {
 pub(crate) fn sse_serialize(
     chunk: &ChatCompletionsResponseChunk,
 ) -> Result<Bytes, OpenAIAdapterError> {
-    let json_text = serde_json::to_string(chunk).map_err(OpenAIAdapterError::from)?;
-    Ok(Bytes::from(format!("data: {}\n\n", json_text)))
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(b"data: ");
+    serde_json::to_writer(&mut buf, chunk).map_err(OpenAIAdapterError::from)?;
+    buf.extend_from_slice(b"\n\n");
+    Ok(Bytes::from(buf))
 }
 
 fn find_stop_pos(content: &str, stop: &[String]) -> Option<usize> {
@@ -426,15 +429,36 @@ where
     Box::pin(stop_detect)
 }
 
-/// 将 ChunkStream 序列化为 SSE 字节流
+/// 将 ChunkStream 序列化为 SSE 字节流，带 completion_tokens 追踪
+///
+/// `on_finish` 在流结束时被调用，参数为累积的 completion_tokens
+pub(crate) fn sse_stream_with_callback(
+    inner: ChunkStream,
+    on_finish: Box<dyn FnOnce(u64) + Send>,
+) -> StreamResponse {
+    Box::pin(SseSerializer {
+        inner,
+        completion_tokens: 0u64,
+        on_finish: Some(on_finish),
+    })
+}
+
+/// 将 ChunkStream 序列化为 SSE 字节流（无回调）
+#[allow(dead_code)]
 pub(crate) fn sse_stream(inner: ChunkStream) -> StreamResponse {
-    Box::pin(SseSerializer { inner })
+    Box::pin(SseSerializer {
+        inner,
+        completion_tokens: 0u64,
+        on_finish: None,
+    })
 }
 
 pin_project! {
     struct SseSerializer<S> {
         #[pin]
         inner: S,
+        completion_tokens: u64,
+        on_finish: Option<Box<dyn FnOnce(u64) + Send>>,
     }
 }
 
@@ -448,11 +472,21 @@ where
         let mut this = self.project();
         match this.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
+                // 追踪 completion_tokens
+                if let Some(u) = &chunk.usage {
+                    *this.completion_tokens = u.completion_tokens as u64;
+                }
                 trace!(target: "adapter", ">>> {}", serde_json::to_string(&chunk).unwrap_or_default());
                 Poll::Ready(Some(sse_serialize(&chunk)))
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(None) => {
+                // 流结束，触发回调
+                if let Some(on_finish) = this.on_finish.take() {
+                    on_finish(*this.completion_tokens);
+                }
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
