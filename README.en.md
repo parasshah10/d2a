@@ -30,7 +30,7 @@ A proxy that translates free DeepSeek web chat into standard OpenAI and Anthropi
   HTTP URLs trigger web search mode so the model can directly access the link
 - **Web admin panel**: Built-in dashboard for account pool status, API key management, request logs, and config hot-reload
 - **Model aliases**: Custom model ID mapping (e.g. `deepseek-v4-flash` → `deepseek-default`) for broader client compatibility
-- **Rust implementation**: Single binary + single TOML config, native cross-platform performance
+- **Rust implementation**: Single binary + single TOML config, native cross-platform performance (web panel embedded at compile time, zero extra files needed)
 - **Multi-account pool**: Most-idle-first rotation (DashMap lock-free reads), horizontal scalability for concurrency
 
 ## Quick Start

@@ -23,7 +23,6 @@ use axum::{
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::anthropic_compat::AnthropicCompat;
 use crate::config::Config;
@@ -130,14 +129,20 @@ fn build_router(state: AppState) -> Router {
     let router = public.merge(api_routes).merge(admin_routes);
 
     // 静态文件服务：/admin → web/dist/
+    // 优先从文件系统读取（开发模式），回退到编译时嵌入的资源（release 二进制）
     let web_dist = std::path::Path::new("web/dist");
     let router = if web_dist.exists() {
         router.nest_service(
             "/admin",
-            ServeDir::new(web_dist).fallback(ServeFile::new("web/dist/index.html")),
+            tower_http::services::ServeDir::new(web_dist)
+                .fallback(tower_http::services::ServeFile::new("web/dist/index.html")),
         )
     } else {
+        // 编译时嵌入：API 路由优先，其余走 SPA fallback
         router
+            .route("/admin/assets/{*path}", get(serve_embedded_asset))
+            .route("/admin/favicon.svg", get(serve_embedded_asset))
+            .route("/admin/{*path}", get(serve_embedded_spa))
     };
 
     router.with_state(state).layer(build_cors_layer(&cors_origins))
@@ -173,6 +178,45 @@ fn build_cors_layer(origins: &[String]) -> CorsLayer {
             header::CONTENT_TYPE,
             axum::http::HeaderName::from_static("x-request-id"),
         ])
+}
+
+/// 编译时嵌入 web/dist/ 目录，release 二进制无需额外文件即可提供管理面板
+#[derive(rust_embed::Embed)]
+#[folder = "web/dist/"]
+struct WebAssets;
+
+/// 提供嵌入的静态资源（JS/CSS/SVG 等）
+async fn serve_embedded_asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    use axum::http::{header, StatusCode};
+
+    let file = WebAssets::get(&path);
+    match file {
+        Some(content) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, mime.as_ref())],
+                content.data,
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// SPA fallback: 所有非资源路径返回 index.html
+async fn serve_embedded_spa() -> Response {
+    use axum::http::{header, StatusCode};
+
+    match WebAssets::get("index.html") {
+        Some(content) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            content.data,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Serialize)]
