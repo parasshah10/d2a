@@ -267,16 +267,19 @@ impl Config {
     /// 解析命令行参数并加载配置
     ///
     /// 支持 `-c <path>` 指定配置文件路径，默认使用 `config.toml`
-    /// 也支持 `DS_CONFIG_PATH` 环境变量（优先级：-c > DS_CONFIG_PATH > 默认值）
+    /// 也支持 `DS_CONFIG_PATH` 环境变量（优先级：`-c` > `DS_CONFIG_PATH` > 默认值）
+    /// 若文件不存在且非 `-c` 显式指定，自动创建最小配置
     /// 返回 (加载的配置, 配置文件的路径)
     pub fn load_with_args(
         args: impl Iterator<Item = String>,
     ) -> Result<(Self, PathBuf), ConfigError> {
+        let mut explicit_c = false;
         let mut config_path = None;
         let mut iter = args.skip(1); // 跳过程序名
 
         while let Some(arg) = iter.next() {
             if arg == "-c" {
+                explicit_c = true;
                 if let Some(path) = iter.next() {
                     config_path = Some(path);
                 } else {
@@ -289,6 +292,38 @@ impl Config {
             .map(PathBuf::from)
             .or_else(|| std::env::var("DS_CONFIG_PATH").ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("config.toml"));
+
+        if !path.exists() {
+            if explicit_c {
+                return Err(ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("指定配置文件不存在: {}", path.display()),
+                )));
+            }
+            // 自动创建最小配置
+            let default = Config {
+                accounts: Vec::new(),
+                deepseek: DeepSeekConfig::default(),
+                server: ServerConfig {
+                    host: "0.0.0.0".into(),
+                    port: 5317,
+                    cors_origins: default_cors_origins(),
+                },
+                proxy: ProxyConfig::default(),
+                admin: AdminConfig::default(),
+                api_keys: Vec::new(),
+            };
+            if let Some(parent) = path.parent() {
+                let parent_str = parent.as_os_str();
+                if !parent_str.is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            default.save(&path)?;
+            log::info!(target: "config", "已创建默认配置文件: {}", path.display());
+            return Ok((default, path));
+        }
+
         let config = Self::load(&path)?;
         Ok((config, path))
     }

@@ -14,13 +14,11 @@ config.toml
 # 运行时敏感文件
 stats.json
 logs/
-data/
 
 # tmp文件
 **/tmp.*
 **/tmp_*
 **/tmp
-log.txt
 
 # Web (frontend)
 web/node_modules

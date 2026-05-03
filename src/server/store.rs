@@ -69,14 +69,27 @@ pub struct StoreManager {
 
 impl StoreManager {
     pub fn new(base_dir: &Path, config_path: &Path, config: Arc<RwLock<Config>>) -> Self {
-        let stats = if base_dir.join("stats.json").exists() {
-            match read_json_file::<StatsStore>(&base_dir.join("stats.json")) {
-                Ok(s) => {
-                    info!(target: "store", "已加载 stats.json");
-                    s
+        let stats_path = base_dir.join("stats.json");
+        let stats = if stats_path.exists() {
+            match fs::read_to_string(&stats_path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    match serde_json::from_str::<StatsStore>(&content) {
+                        Ok(s) => {
+                            info!(target: "store", "已加载 stats.json");
+                            s
+                        }
+                        Err(e) => {
+                            warn!(target: "store", "stats.json 解析失败: {}，使用零值", e);
+                            StatsStore::default()
+                        }
+                    }
+                }
+                Ok(_) => {
+                    info!(target: "store", "stats.json 为空，使用零值");
+                    StatsStore::default()
                 }
                 Err(e) => {
-                    warn!(target: "store", "stats.json 解析失败: {}，使用零值", e);
+                    warn!(target: "store", "stats.json 读取失败: {}，使用零值", e);
                     StatsStore::default()
                 }
             }
@@ -240,11 +253,6 @@ fn write_json_file<T: Serialize>(path: &Path, data: &T) -> anyhow::Result<()> {
         fs::set_permissions(path, perms)?;
     }
     Ok(())
-}
-
-fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
-    let content = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&content)?)
 }
 
 /// 生成随机 hex 字符串（32 字节 = 64 hex 字符）

@@ -28,9 +28,9 @@ Rust API proxy exposing free DeepSeek model endpoints. Translates standard OpenA
 
 ```
 src/
-├── main.rs              # Binary entry (~10 lines): init logger, parse CLI, load config, run server
+├── main.rs              # Binary entry (~10 lines): init runtime_log, parse CLI (load_with_args), run server
 ├── lib.rs               # Public API surface: re-exports Config, DeepSeekCore, OpenAIAdapter, etc.
-├── config.rs            # Config loading from config.toml (-c flag), no business logic
+├── config.rs            # Config load/save from config.toml (-c / DS_CONFIG_PATH), Arc<RwLock<Config>>
 │
 ├── ds_core/             # DeepSeek implementation facade (src/ds_core.rs)
 │   ├── ds_core.rs       # Facade: DeepSeekCore, CoreError; declares submodules
@@ -66,13 +66,18 @@ src/
 │       ├── stream.rs    # OpenAI SSE → Anthropic SSE events
 │       └── aggregate.rs # OpenAI JSON → Anthropic JSON
 │
+
 └── server/              # HTTP server facade (src/server.rs)
     ├── server.rs        # Facade: axum router, auth middleware, graceful shutdown
-    ├── handlers.rs      # Route handlers for OpenAI + Anthropic endpoints
-    ├── stream.rs        # SseBody: wraps StreamResponse → axum::body::Body
-    └── error.rs         # ServerError: OpenAI-compatible error JSON responses
+    ├── admin.rs         # Admin panel route handlers (setup, login, config, stats, keys, models)
+    ├── auth.rs          # JWT sign/verify, password setup/login, login rate limiter
+    ├── error.rs         # ServerError: API error JSON responses
+    ├── handlers.rs      # Business route handlers (OpenAI + Anthropic)
+    ├── runtime_log.rs   # File log redirection (stdout → runtime.log)
+    ├── stats.rs         # Request stats recording (RequestStats, StatsHandle)
+    ├── store.rs         # StoreManager: delegates admin/keys to Config::save(), stats → stats.json
+    └── stream.rs        # SseBody: wraps StreamResponse → axum::body::Body
 ```
-
 **Additional resources:**
 - `config.example.toml` — authoritative configuration reference with all fields documented
 - `examples/adapter_cli.rs` + `examples/adapter_cli/` — debug CLI + JSON request samples
@@ -81,7 +86,7 @@ src/
 
 ### Binary / Library Split
 
-`main.rs` is a ~10-line wrapper: init `env_logger`, parse CLI args, load config, call `server::run()`. The crate can be built both as a library (`cargo build --lib`) and a binary (`cargo build --bin ds-free-api`). `lib.rs` defines the full public API surface.
+`main.rs` is a ~10-line wrapper: init `runtime_log`, read `DS_DATA_DIR`, parse CLI args via `Config::load_with_args()` → `(Config, PathBuf)`, call `server::run(config, config_path)`. The crate can be built both as a library (`cargo build --lib`) and a binary (`cargo build --bin ds-free-api`). `lib.rs` defines the full public API surface.
 
 ### Facade Module Pattern
 
@@ -105,7 +110,7 @@ This means the file tree does not directly map to the public API. To understand 
 
 ### 1. Single Responsibility
 Every module has one job. Cross-module boundaries are strict:
-- `config.rs`: Configuration loading only, no client creation or business logic
+- `config.rs`: Configuration load & save only, no client creation or business logic
 - `client.rs`: Raw HTTP calls only, no token caching, retry, or SSE parsing
 - `accounts.rs`: Account pool management only, no network requests
 - `pow.rs`: WASM computation only, no account management or request sending
@@ -223,11 +228,11 @@ Errors propagate upward with translation at each module boundary:
 
 1. **`client.rs`**: `ClientError` (`Http` | `Status` | `Business` | `Json` | `InvalidHeader`)
    - Parses DeepSeek's wrapper envelope `{code, msg, data: {biz_code, biz_msg, biz_data}}` via `Envelope::into_result()`
-2. **`accounts.rs`**: `PoolError` (`AllAccountsFailed` | `Client`(ClientError) | `Pow`(PowError) | `Validation`)
+2. **`accounts.rs`**: `PoolError` (`AllAccountsFailed` | `Client`(ClientError) | `Pow`(PowError) | `Validation` | `Exists`)
 3. **`ds_core.rs`**: `CoreError` (`Overloaded` | `ProofOfWorkFailed` | `ProviderError` | `Stream`)
 4. **`openai_adapter.rs`**: `OpenAIAdapterError` (`BadRequest` | `Overloaded` | `ProviderError` | `Internal` | `ToolCallRepairNeeded`)
 5. **`anthropic_compat.rs`**: `AnthropicCompatError` (`BadRequest` | `Overloaded` | `Internal`)
-6. **`server/error.rs`**: `ServerError` (`Adapter` | `Unauthorized` | `NotFound`)
+6. **`server/error.rs`**: `ServerError` (`Adapter`(OpenAIAdapterError) | `Anthropic`(AnthropicCompatError) | `Unauthorized` | `NotFound`(String))
 
 All errors use `thiserror` derive macro.
 
@@ -301,6 +306,9 @@ Follow `docs/code-style.md`:
 
 - Uncommented values in `config.toml` = required; commented = optional with default
 - `src/config.rs` is the single source for config loading — no other module reads config files
+- `Config::load_with_args()` returns `(Config, PathBuf)` — the path is propagated to `AppState.config_path` for reload
+- `Config` is wrapped in `Arc<RwLock<Config>>` — runtime-mutable, admin panel changes auto-persist via `Config::save()`
+- `Config::save()` writes atomically (tmp + rename, 0600 permissions). `Config` now includes `AdminConfig` (password hash, JWT secret) and `api_keys: Vec<ApiKeyEntry>` — no separate JSON files
 
 ### Testing
 
@@ -319,6 +327,7 @@ Follow `docs/code-style.md`:
 - Do **NOT** access `ds_core` directly from `anthropic_compat` — always go through `OpenAIAdapter`
 - Do **NOT** add `#[allow(...)]` outside `src/ds_core/client.rs` — dead API methods and deserialized fields for API symmetry are expected only in the raw HTTP client layer
 
+- Do **NOT** keep admin/auth config in separate JSON files (`admin.json`, `api_keys.json`) — they are merged into `Config` fields and persisted via `Config::save()` into `config.toml`
 ---
 
 ## Troubleshooting
@@ -365,6 +374,11 @@ Follow `docs/code-style.md`:
 | Logging spec | `docs/logging-spec.md` | Targets, levels, message format for `log` crate |
 | Prompt injection strategy | `docs/deepseek-prompt-injection.md` | DeepSeek native tags, claude-3.5-sonnet system prompt research |
 | API reference | `docs/deepseek-api-reference.md` | DeepSeek endpoint details |
+| Admin panel routes | `src/server/admin.rs` | Setup/login/config/stats/models/keys handlers |
+| JWT auth + password | `src/server/auth.rs` | `setup_admin()`/`login_admin()`, JWT sign/verify, login rate limiter |
+| Store manager | `src/server/store.rs` | API key validation, stats persistence, delegates admin/keys to `Config::save()` |
+| Request stats | `src/server/stats.rs` | `RequestStats`, `StatsHandle`, background flush to `stats.json` |
+| Runtime log | `src/server/runtime_log.rs` | stdout redirect to `runtime.log` with rotation |
 
 ---
 
