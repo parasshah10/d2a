@@ -1,8 +1,8 @@
-//! 管理 API 路由处理器 —— 登录/设置密码、账号池状态、请求统计、模型列表、配置查看、API Key 管理
+//! 管理 API 路由处理器 —— 登录/设置密码、账号池状态、请求统计、模型列表、配置查看
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{StatusCode, header},
     response::Response,
 };
@@ -26,24 +26,6 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub token: String,
-}
-
-#[derive(Deserialize)]
-pub struct CreateKeyRequest {
-    pub description: String,
-}
-
-#[derive(Deserialize)]
-pub struct AddAccountRequest {
-    pub email: String,
-    pub mobile: String,
-    pub area_code: String,
-    pub password: String,
-}
-
-#[derive(Serialize)]
-pub struct CreateKeyResponse {
-    pub key: String,
 }
 
 #[derive(Serialize)]
@@ -200,7 +182,7 @@ pub(crate) async fn admin_stats(State(state): State<AppState>) -> Response {
 
 /// GET /admin/api/models
 pub(crate) async fn admin_models(State(state): State<AppState>) -> Response {
-    let models = state.adapter.list_models();
+    let models = state.adapter.list_models().await;
     json_response(&models)
 }
 
@@ -211,116 +193,36 @@ pub(crate) async fn admin_config(State(state): State<AppState>) -> Response {
     json_response(&config_view)
 }
 
-/// GET /admin/api/keys — 列出 API Key（脱敏）
-pub(crate) async fn admin_list_keys(State(state): State<AppState>) -> Response {
-    let keys = state.store.list_api_keys_masked().await;
-    json_response(&keys)
-}
-
-/// POST /admin/api/keys — 创建 API Key
-pub(crate) async fn admin_create_key(
+/// PUT /admin/api/config — 更新并热重载配置
+pub(crate) async fn admin_put_config(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Response {
-    let req: CreateKeyRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {}", e)),
+    let new_config: Config = match serde_json::from_slice(&body) {
+        Ok(c) => c,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("JSON 解析失败: {}", e)),
     };
 
-    match state.store.add_api_key(req.description).await {
-        Ok(key) => json_response(&CreateKeyResponse { key }),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("创建失败: {}", e),
-        ),
-    }
-}
-
-/// DELETE /admin/api/keys/{key} — 删除 API Key
-pub(crate) async fn admin_delete_key(
-    Path(key): Path<String>,
-    State(state): State<AppState>,
-) -> Response {
-    match state.store.delete_api_key(&key).await {
-        Ok(true) => json_response(&serde_json::json!({"ok": true})),
-        Ok(false) => error_response(StatusCode::NOT_FOUND, "API Key 不存在"),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("删除失败: {}", e),
-        ),
-    }
-}
-
-/// POST /admin/api/accounts — 动态添加账号
-pub(crate) async fn admin_add_account(
-    State(state): State<AppState>,
-    body: axum::body::Bytes,
-) -> Response {
-    let req: AddAccountRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("请求格式错误: {}", e)),
-    };
-
-    if req.email.is_empty() && req.mobile.is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "email 和 mobile 不能同时为空");
+    // Validate
+    if let Err(e) = new_config.validate() {
+        return error_response(StatusCode::BAD_REQUEST, &e.to_string());
     }
 
-    let creds = crate::config::Account {
-        email: req.email,
-        mobile: req.mobile,
-        area_code: req.area_code,
-        password: req.password,
-    };
-
-    match state.adapter.add_account(&creds).await {
-        Ok(id) => json_response(&serde_json::json!({"ok": true, "id": id})),
-        Err(e) => error_response(StatusCode::CONFLICT, &e.to_string()),
-    }
-}
-
-/// DELETE /admin/api/accounts/{id} — 动态移除账号
-pub(crate) async fn admin_remove_account(
-    Path(id): Path<String>,
-    State(state): State<AppState>,
-) -> Response {
-    match state.adapter.remove_account(&id).await {
-        Ok(removed_id) => json_response(&serde_json::json!({"ok": true, "id": removed_id})),
-        Err(e) => {
-            let status = match &e {
-                crate::ds_core::PoolError::NotFound(_) => StatusCode::NOT_FOUND,
-                crate::ds_core::PoolError::AccountBusy(_) => StatusCode::CONFLICT,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            error_response(status, &e.to_string())
+    // Persist
+    {
+        let mut guard = state.config.write().await;
+        *guard = new_config.clone();
+        if let Err(e) = guard.save(&state.config_path) {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("保存失败: {}", e),
+            );
         }
     }
-}
 
-/// POST /admin/api/accounts/{id}/relogin — 手动重新登录 Error/Invalid 账号
-pub(crate) async fn admin_relogin_account(
-    Path(id): Path<String>,
-    State(state): State<AppState>,
-) -> Response {
-    match state.adapter.re_login_single(&id).await {
-        Ok(()) => json_response(&serde_json::json!({"ok": true, "id": id})),
-        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
-    }
-}
-
-/// POST /admin/api/reload — 热重载 config.toml 中的账号
-pub(crate) async fn admin_reload_config(State(state): State<AppState>) -> Response {
-    let new_config = match crate::config::Config::load(&state.config_path) {
-        Ok(c) => c,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("配置加载失败: {}", e)),
-    };
-
-    let result = state.adapter.sync_accounts(&new_config.accounts).await;
-    json_response(&serde_json::json!({
-        "ok": true,
-        "added": result.added,
-        "removed": result.removed,
-        "failed": result.failed,
-    }))
+    // Hot-reload: sync accounts from the new config
+    state.adapter.sync_accounts(&new_config.accounts).await;
+    json_response(&serde_json::json!({"ok": true}))
 }
 
 #[derive(Deserialize)]

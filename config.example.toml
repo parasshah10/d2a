@@ -48,7 +48,7 @@ password = "pass3"
 # wasm_url = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
 
 # X-Client-Version 请求头（用于 expert 模型等功能）
-# client_version = "1.8.0"
+# client_version = "2.0.0"
 
 # X-Client-Platform 请求头
 # client_platform = "web"
@@ -59,11 +59,10 @@ password = "pass3"
 # max_input_tokens = [1048576, 1048576]
 # max_output_tokens = [384000, 384000]
 
-# 模型别名（可选，默认已包含以下映射）
-# key 为 OpenAI model_id，value 为映射到的 model_type
-# [deepseek.model_aliases]
-# deepseek-v4-flash = "default"
-# deepseek-v4-pro = "expert"
+# 模型别名（可选，按 index 对齐 model_types，默认无别名）
+# 如 model_types = ["default", "expert"], model_aliases = ["", "deepseek-v4-pro"]
+# 则仅 deepseek-v4-pro → expert（index 1），空字符串被跳过
+# model_aliases = []
 
 # 代理配置（可选，绕过 CloudFront WAF 地区限制）
 # 使用非美国地区的代理出口节点可避免 WAF Challenge

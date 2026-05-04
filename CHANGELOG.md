@@ -4,86 +4,89 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.6] - 2026-05-02
+## [0.2.6] - 2026-05-03
 
 ### Added
 - **代理配置**：新增 `[proxy]` 配置项，支持 HTTP/HTTPS/SOCKS5 代理。美国地区用户可通过配置非美国
   出口节点绕过 CloudFront WAF 限制，无需依赖环境变量。
-  ```toml
-  [proxy]
-  url = "http://127.0.0.1:7890"
-  ```
 - **WAF 友好提示**：当检测到 AWS WAF Challenge 时，输出清晰的双语提示和解决方案说明，
   替代原有的 `error decoding response body` 无意义错误
 - **账号自动去重**：启动时自动按 email（优先）或 mobile 去重，重复配置的账号只会生效一次
 - **重试全链路日志**：`try_chat()` 每次 Overloaded 退避重试输出 WARN 日志（含尝试次数和等待时间），
-  重试成功输出 INFO 日志，全部失败输出 WARN 终结日志，便于诊断限流问题
+  重试成功输出 INFO 日志，全部失败输出 WARN 终结日志
 - **适配器入口日志**：`chat_completions()` 处理开始时输出模型和 stream 标志的 DEBUG 日志
 - **转换器提前结束检测**：DeepSeek 流在内容输出完毕前断开时输出 WARN 日志并附 usage 快照
+- **`DS_CONFIG_PATH` 环境变量**：Docker 部署时通过环境变量指定配置文件路径，
+  优先级：`-c` > `DS_CONFIG_PATH` > 默认 `config.toml`
+- **`Config::save()`**：Config 结构体新增 `save()` 方法，原子写入 TOML 文件（write tmp + rename），
+  管理面板的变更自动写回 `config.toml`
+- **`Config` 自动创建**：配置文件不存在时（`-c` 未显式指定）自动生成最小配置写入磁盘，
+  首次启动无需准备配置文件，管理面板添加账号后自动持久化
+- **`PUT /admin/api/config`**：全量配置写入端点，接收完整 JSON 配置，持久化并触发全量热重载。
+  替代旧 keys CRUD / accounts CRUD / reload / relogin 等 6 个分散端点
+- **`OpenAIAdapter::sync_accounts()`**：批量对比新旧账号列表，差异化增删
+- **`auth::setup_admin()` / `auth::login_admin()`**：管理员密码设置和登录的高层编排函数，
+  替代原来 handler 内联的 50 行校验逻辑
 
 ### Changed
 - **依赖升级**：wasmtime 43.0.0 → 44.0.0，修复安全通告 RUSTSEC-2026-0114
 - **inline prompt 瘦身**：`split_history_prompt` 改为只保留最后一个带 `<think>` 的 `<｜Assistant｜>` 块
   作为 inline，其余全部进入 history 文件上传。避免工具调用结果超长导致输入超限
 - **工具调用标签模糊匹配**：新增 `norm_tag_char` / `fuzzy_match_tag`，全角 `｜`(U+FF5C)↔`|`、
-  `▁`(U+2581)↔`_` 自动模糊匹配，覆盖所有字符级幻觉变体。默认 extra 列表精简为格式完全不同
-  的回退标签：`<|tool_call_begin|>`、`<tool_calls>`、`<tool_call>`
-
-### Fixed
-- **CI 幂等性**：`cargo install` 步骤添加 `command -v` 前置检查，避免缓存恢复后重复安装失败
-- **client.rs 日志违规**：`print_waf_hint()` 中 11 条 `warn!` 补全 `target: "ds_core::client"` 参数
-- **导入顺序合规**：`openai_adapter.rs`、`response.rs`、`accounts.rs`、`server.rs`、
-  `anthropic_compat/response/stream.rs` 中的导入分组按规范重排（std → 第三方 → crate → super）
-
-### Docs
-- **Prompt injection 策略**：更新 README 中 DeepSeek 原生标签的注入策略说明，
-  补充 `<｜Tool｜>` 标签的使用方式
-- **CLAUDE.md / AGENTS.md**：精简架构描述，新增故障排除表、请求追踪 grep 示例、`#[allow]` 仅在
-  `client.rs` 出现的策略说明
-- **logging-spec.md**：新增 adapter 层（入口、重试、转换器提前结束）和 ds_core 编排层代码示例，
-  补齐全管道日志级别映射
-- **code-style.md**：修复 `docs/logging.md` 断链；补充错误消息语言约定（用户界面中文/内部英文）
-  和枚举变体 PascalCase 约定
-
-
-### Added
-- **`DS_CONFIG_PATH` 环境变量**：Docker 部署时通过环境变量指定配置文件路径，
-  优先级：`-c` > `DS_CONFIG_PATH` > 默认 `config.toml`
-- **`Config::save()`**：Config 结构体新增 `save()` 方法，原子写入 TOML 文件（write tmp + rename），
-  unix 权限 0600。管理面板的变更自动写回 `config.toml`
-- **`OpenAIAdapter::sync_accounts()`**：批量对比新旧账号列表，差异化增删。
-  替代原来 70 行内联 diff 逻辑
-- **`auth::setup_admin()` / `auth::login_admin()`**：管理员密码设置和登录的高层编排函数，
-  替代原来 handler 内联的 50 行校验逻辑
-
-### Changed
+  `▁`(U+2581)↔`_` 自动模糊匹配，默认 extra 列表精简为格式完全不同的回退标签
+- **TLS 后端切换**：从 `native-tls`（OpenSSL）切换到 `rustls`（纯 Rust TLS 实现），
+  编译 OpenSSL C 代码不再需要，cross-compilation 速度提升
+- **Docker 基础镜像**：`debian:bookworm-slim`（glibc, ~80MB）→ `alpine:3.21`（musl, ~5MB），
+  最终镜像约 20MB。Dockerfile 移入 `docker/` 目录，使用 musl 编译的 binary
+- **`docker-compose.yml` → `docker-compose.yaml`**：符合最新 Docker Compose 规范，
+  移入 `docker/` 目录，镜像从 `ghcr.io` 拉取，`config/` 和 `data/` 目录 bind mount 持久化
+- **`model_aliases` 类型变更**：从 `HashMap<String, String>` 改为 `Vec<String>`，
+  按 index 对齐 `model_types`，默认无别名。空字符串自动跳过
 - **配置归并**：`admin.json` 和 `api_keys.json` 删除，AdminConfig（密码 hash + JWT 密钥）和
-  ApiKeyEntry（API Key 列表）合并到 `config.toml` 的 `[admin]` / `[[api_keys]]` 节。
-  `stats.json` 保留为运行数据，不属于配置范畴
-- **Config 运行时可变**：`Config` 由启动时冻结的 `Arc<Config>` 改为 `Arc<RwLock<Config>>`，
-  `config.toml` 时刻反映运行状态，不重启即可通过管理面板改配置并持久化
+  ApiKeyEntry（API Key 列表）合并到 `config.toml` 的 `[admin]` / `[[api_keys]]` 节
+- **Config 运行时可变**：`Config` 由启动时冻结的 `Arc<Config>` 改为 `Arc<RwLock<Config>>`
 - **sse_stream_with_callback 删除**：OpenAI 流式响应路径改用 `inspect`/`map`/`TokenGuardStream`
-  （与 Anthropic 路径完全对称），不再通过回调逃逸统计逻辑
+  （与 Anthropic 路径完全对称）
 - **handler 瘦身**：
   - `chat_completions` / `anthropic_messages` 的统计日志代码提取为 `AppState::record_request()`
   - `admin_setup` / `admin_login` 从各 ~50 行压缩到 ~12 行（委托 `auth::*`）
   - `admin_reload_config` 从 ~70 行压缩到 ~10 行（委托 `OpenAIAdapter::sync_accounts()`）
-- **store.rs 重构**：`StoreManager` 从读写独立 JSON 文件改为委托共享 `Arc<RwLock<Config>>`，
-  `admin.json` / `api_keys.json` 读写全部通过 `config.save()` 落盘
-- **`save_admin` 参数优化**：从 `&AdminStore` 结构体改为三个独立参数 `(String, String, u64)`，
-  避免多余的 `to_string()` clone
-- **Dockerfile 更新**：`config.example.toml` → `/app/config.toml`，设置 `DS_CONFIG_PATH` 环境变量
+- **store.rs 重构**：`StoreManager` 从读写独立 JSON 文件改为委托共享 `Arc<RwLock<Config>>`
+- **管理 API 整合**：所有配置修改走 `PUT /admin/api/config`，移除 6 个分散端点
+- **`/` 根路径**：从返回 JSON 端点列表改为 302 重定向到 `/admin` 管理面板
+- **stderr 日志彩色输出**：TRACE=紫、INFO=绿、WARN=黄、ERROR=红、DEBUG=蓝，
+  时间戳和目标模块变淡，仅在终端连接时启用
+- **client_version 默认值**：`1.8.0` → `2.0.0`
 
 ### Removed
-- `DS_CONFIG` 环境变量：配置路径现在通过 `-c` 或 `DS_CONFIG_PATH` 指定，启动后 `config_path`
-  通过 `AppState.config_path` 传递，reload 时使用同一路径
+- `DS_CONFIG` 环境变量：配置路径现在通过 `-c` 或 `DS_CONFIG_PATH` 指定
 - `admin.json` 和 `api_keys.json`：合并入 `config.toml`
 - 启动时的 `accounts.is_empty()` 验证：无账号启动后通过管理面板添加
-- `sse_stream_with_callback()` / `sse_stream()` / `SseSerializer` struct：改用 `TokenGuardStream`
+- `sse_stream_with_callback()` / `sse_stream()` / `SseSerializer` struct
+- `POST /admin/api/keys` / `DELETE /admin/api/keys/{key}` 等 6 个分散端点：
+  统一由 `PUT /admin/api/config` 替代
+- `.dockerignore`：Dockerfile 已使用精确 COPY 路径，不再需要
+- 根目录 `Dockerfile` / `docker-compose.yml`：移入 `docker/` 目录
 
 ### Fixed
-- **管理面板 reload 路径一致**：`admin_reload_config` 不再独立读 `DS_CONFIG` 环境变量，
-  而是使用 `AppState.config_path`，确保启动 `-c` 指定的路径与 reload 路径一致
+- **CI 幂等性**：`cargo install` 步骤添加 `command -v` 前置检查
+- **client.rs 日志违规**：`print_waf_hint()` 中 11 条 `warn!` 补全 target 参数
+- **导入顺序合规**：多个模块的导入分组按规范重排
+- **管理面板 reload 路径一致**：`admin_reload_config` 使用 `AppState.config_path`
+- **空账号列表启动崩溃**：`accounts.init()` 在没有账号时不再误报 `AllAccountsFailed`
+- **stats.json 空文件警告**：空文件不再触发 EOF 解析 WARN，降级为 INFO 提示
+
+### Docs
+- **Prompt injection 策略**：更新 README 中 DeepSeek 原生标签的注入策略说明
+- **CLAUDE.md / AGENTS.md**：精简架构描述，新增故障排除表、请求追踪 grep 示例、
+  `#[allow]` 策略说明、git 命令使用须经授权规则
+- **logging-spec.md**：新增 adapter 层和 ds_core 编排层代码示例，补齐全管道日志级别映射
+- **code-style.md**：修复 `docs/logging.md` 断链；补充错误消息语言约定和枚举变体 PascalCase 约定
+- **README / README.en.md 全面精简**：API 端点表简化为 8 个公开端点；模型映射更新为 Vec 格式；
+  开发节保留架构图 + 设计哲学，详细内容移至 `docs/development.md`
+- **英文文档**：创建 `docs/en/` 目录，所有文档提供英文版
+- **`docs/development.md` / `docs/en/development.md`**：构建、Docker、e2e 测试等开发指南
+
 ## [0.2.5] - 2026-04-30
 
 ### Added

@@ -100,10 +100,11 @@ pub struct DeepSeekConfig {
     /// 工具调用标签配置（自定义回退标签）
     #[serde(default)]
     pub tool_call: ToolCallTagConfig,
-    /// 模型别名：key 为别名 model_id，value 为映射到的 model_type
-    /// 默认：deepseek-v4-flash → default, deepseek-v4-pro → expert
-    #[serde(default = "default_model_aliases")]
-    pub model_aliases: std::collections::HashMap<String, String>,
+    /// 模型别名：按 index 对齐 model_types，默认无别名
+    /// 如 model_types = ["default", "expert"], model_aliases = ["", "deepseek-v4-pro"]
+    /// 则仅 deepseek-v4-pro → expert（index 1），空字符串被跳过
+    #[serde(default)]
+    pub model_aliases: Vec<String>,
 }
 
 /// 工具调用标签配置
@@ -158,20 +159,13 @@ impl Default for DeepSeekConfig {
             max_input_tokens: default_max_input_tokens(),
             max_output_tokens: default_max_output_tokens(),
             tool_call: ToolCallTagConfig::default(),
-            model_aliases: default_model_aliases(),
+            model_aliases: Vec::new(),
         }
     }
 }
 
 fn default_model_types() -> Vec<String> {
     vec!["default".to_string(), "expert".to_string()]
-}
-
-fn default_model_aliases() -> std::collections::HashMap<String, String> {
-    let mut m = std::collections::HashMap::new();
-    m.insert("deepseek-v4-flash".to_string(), "default".to_string());
-    m.insert("deepseek-v4-pro".to_string(), "expert".to_string());
-    m
 }
 
 fn default_max_input_tokens() -> Vec<u32> {
@@ -184,16 +178,16 @@ fn default_max_output_tokens() -> Vec<u32> {
 
 impl DeepSeekConfig {
     /// 生成 OpenAI 模型注册表映射
-    ///
-    /// key 为小写的 model_id（如 deepseek-default），value 为内部 model_type（如 default）
     pub fn model_registry(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
-        for ty in &self.model_types {
+        for (i, ty) in self.model_types.iter().enumerate() {
             map.insert(format!("deepseek-{}", ty).to_lowercase(), ty.clone());
-        }
-        // 合并别名（别名 → model_type）
-        for (alias, ty) in &self.model_aliases {
-            map.insert(alias.to_lowercase(), ty.clone());
+            if let Some(alias) = self.model_aliases.get(i) {
+                let alias = alias.trim().to_lowercase();
+                if !alias.is_empty() {
+                    map.insert(alias, ty.clone());
+                }
+            }
         }
         map
     }
@@ -233,7 +227,7 @@ fn default_user_agent() -> String {
 
 /// 默认 X-Client-Version
 fn default_client_version() -> String {
-    "1.8.0".to_string()
+    "2.0.0".to_string()
 }
 
 /// 默认 X-Client-Platform
@@ -328,7 +322,7 @@ impl Config {
         Ok((config, path))
     }
     /// 验证配置有效性
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.deepseek.model_types.is_empty() {
             return Err(ConfigError::Validation("model_types 不能为空".to_string()));
         }

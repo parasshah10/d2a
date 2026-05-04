@@ -36,8 +36,8 @@ def load_config() -> dict:
         config = tomllib.load(f)
     accounts = len(config.get("accounts", []))
     safe = max(1, accounts // 2)
-    tokens = config.get("server", {}).get("api_tokens", [])
-    api_key = tokens[0]["token"] if tokens else "sk-test"
+    api_keys = config.get("api_keys", [])
+    api_key = api_keys[0]["key"] if api_keys else "sk-test"
     return {"accounts": accounts, "safe_concurrency": safe, "api_key": api_key}
 
 

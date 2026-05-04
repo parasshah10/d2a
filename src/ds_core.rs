@@ -119,4 +119,8 @@ impl DeepSeekCore {
     pub async fn shutdown(&self) {
         self.completions.shutdown().await;
     }
+
+    pub async fn reload_config(&self, config: &Config) -> Result<(), CoreError> {
+        self.completions.reload_config(config).await
+    }
 }

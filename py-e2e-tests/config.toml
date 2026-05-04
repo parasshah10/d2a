@@ -1,10 +1,14 @@
+# DS Free API — e2e 测试配置文件
+# 基于 config.example.toml 对齐，账号为实际测试账户
+
 [server]
 host = "127.0.0.1"
 port = 5317
-
-[[server.api_tokens]]
-token = "sk-test"
+# 通过 admin 面板配置的 API Key，用于 e2e 测试鉴权
+[[api_keys]]
+key = "sk-test"
 description = "开发测试"
+created_at = 1700000000
 
 [[accounts]]
 email = "idyllic4202@wplacetools.com"
@@ -54,7 +58,7 @@ password = "test12345"
 # wasm_url = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
 
 # X-Client-Version 请求头（用于 expert 模型等功能）
-# client_version = "1.8.0"
+# client_version = "2.0.0"
 
 # X-Client-Platform 请求头
 # client_platform = "web"
@@ -70,3 +74,8 @@ password = "test12345"
 # [proxy]
 # url = "http://127.0.0.1:7890"
 # url = "socks5://127.0.0.1:7891"
+# 模型别名（可选，按 index 对齐 model_types，默认无别名）
+# 如 model_types = ["default", "expert"], model_aliases = ["", "deepseek-v4-pro"]
+# 则仅 deepseek-v4-pro → expert（index 1），空字符串被跳过
+# model_aliases = []
+
