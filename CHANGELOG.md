@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   同样保留，防止管理面板保存时冲掉已有敏感字段
 - **Docker 专用配置模板**：`docker/config.example.toml` 使用 `host = "0.0.0.0"` 且账号为空，
   内置镜像首次启动即可从管理面板添加账号
+- **CI 前端构建校验**：`build-frontend` job 执行 `npm ci + build + lint`，产物同步供后端 check/test 使用|
 
 ### Changed
 - **依赖升级**：wasmtime 43.0.0 → 44.0.0，修复安全通告 RUSTSEC-2026-0114
@@ -81,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **auto-create 默认 host**：`0.0.0.0` → `127.0.0.1`，与 `config.example.toml` 一致
 - **favicon**：`public/favicon.svg` 改为 `assets/logo.svg` 的符号链接，统一图标源
 - **清理无用前端资产**：移除 Vite 默认模板遗留的 `react.svg`、`vite.svg`、`hero.png`|
+- **CI 流水线重构**：`build-frontend` 独立 job，`check`/`test` 通过 `needs` 依赖前端产物，
+  确保 CI 始终使用真实前端文件编译
+- **`just check-web`**：新增前端校验命令（`npm ci + build + lint`），与后端 `check` 分工明确
+- **pre-commit 钩子对齐 CI**：更新为 `just check-web → just check → cargo test`，三处流程一致|
 ### Removed
 - `DS_CONFIG` 环境变量：配置路径现在通过 `-c` 或 `DS_CONFIG_PATH` 指定
 - `admin.json` 和 `api_keys.json`：合并入 `config.toml`

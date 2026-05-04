@@ -12,6 +12,11 @@ check:
   cargo outdated --root-deps-only
   cargo machete          
 
+# Build + lint frontend (npm ci, npm run build, npm run lint)
+check-web:
+  cd web && npm ci && npm run build && npm run lint
+
+
 # Run unified protocol debug CLI (replaces ds-core-cli / openai-adapter-cli)
 # 默认使用 py-e2e-tests/config.toml，可通过 -c <path> 覆盖
 adapter-cli *ARGS:
