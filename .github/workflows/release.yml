@@ -97,11 +97,9 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             suffix: linux-x86_64-musl
-            runner: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             suffix: linux-aarch64-musl
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Download frontend assets
@@ -122,14 +120,6 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-key: ${{ matrix.target }}
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake
-      - name: Install zig
-        uses: taiki-e/install-action@v2
-        with:
-          tool: zig
       - name: Install cargo-zigbuild
         uses: taiki-e/install-action@v2
         with:
