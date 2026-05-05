@@ -132,6 +132,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           TARGET_US="${TARGET//-/_}"
+          TARGET_US="${TARGET_US^^}"
           echo "CC_${TARGET_US}=musl-gcc" >> "$GITHUB_ENV"
           echo "CXX_${TARGET_US}=musl-gcc" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_${TARGET_US}_LINKER=musl-gcc" >> "$GITHUB_ENV"
