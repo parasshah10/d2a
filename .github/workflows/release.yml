@@ -125,6 +125,8 @@ jobs:
         with:
           tool: cargo-zigbuild
       - name: Build
+        env:
+          CARGO_ZIGBUILD_AUTO_DOWNLOAD_ZIG: "true"
         run: cargo zigbuild --release --target ${{ matrix.target }}
       - name: Package
         run: |
