@@ -122,14 +122,21 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-key: ${{ matrix.target }}
-
-      - name: Install cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
+      - name: Install musl build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ musl-tools
+      - name: Configure musl target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          TARGET_US="${TARGET//-/_}"
+          echo "CC_${TARGET_US}=musl-gcc" >> "$GITHUB_ENV"
+          echo "CXX_${TARGET_US}=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${TARGET_US}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          echo "TARGET_CMAKE_TOOLCHAIN_FILE=1" >> "$GITHUB_ENV"
       - name: Build
-        run: cross build --release --target ${{ matrix.target }}
-
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Package
         run: |
           name="ds-free-api-${{ steps.meta.outputs.tag }}-${{ matrix.suffix }}"
