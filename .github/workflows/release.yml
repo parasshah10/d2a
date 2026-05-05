@@ -367,6 +367,9 @@ jobs:
         with:
           path: dist
 
+      - name: Remove frontend artifact from release
+        run: rm -rf dist/web-dist
+
       - name: Flatten structure
         run: |
           find dist -mindepth 2 -type f -exec mv -t dist/ {} +
