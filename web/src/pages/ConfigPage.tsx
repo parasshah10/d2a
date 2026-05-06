@@ -22,6 +22,7 @@ import {
   Shield,
   Tags,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 function generateApiKey(): string {
   const bytes = new Uint8Array(24);
@@ -62,6 +63,7 @@ function Section({
 }
 
 export function ConfigPage() {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<FullConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -73,13 +75,13 @@ export function ConfigPage() {
   const loadConfig = () => {
     apiFetchConfig()
       .then(setConfig)
-      .catch(() => setMessage({ type: 'err', text: '加载配置失败' }));
+      .catch(() => setMessage({ type: 'err', text: t('config.loadFailed') }));
   };
 
   useEffect(loadConfig, []);
 
   if (!config) {
-    return <div className="p-4 text-muted-foreground">加载中...</div>;
+    return <div className="p-4 text-muted-foreground">{t('config.loading')}</div>;
   }
 
   const update = <T,>(path: string[], value: T) => {
@@ -118,7 +120,7 @@ export function ConfigPage() {
       };
       const res = await apiSaveConfig(body);
       if (res.ok) {
-        setMessage({ type: 'ok', text: '保存成功，配置已热重载' });
+        setMessage({ type: 'ok', text: t('config.saveSuccess') });
         setRevealedKeys({});
         setOldPassword('');
         setNewPassword('');
@@ -133,7 +135,7 @@ export function ConfigPage() {
   };
 
   const handleCancel = () => {
-    if (confirm('放弃所有未保存的修改？')) {
+    if (confirm(t('config.cancelConfirm'))) {
       setRevealedKeys({});
       loadConfig();
     }
@@ -155,7 +157,7 @@ export function ConfigPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">配置编辑</h1>
+      <h1 className="text-2xl font-bold">{t('config.title')}</h1>
 
       {message && (
         <div
@@ -171,14 +173,14 @@ export function ConfigPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <User className="h-5 w-5" /> 账号
+            <User className="h-5 w-5" /> {t('config.sections.accounts')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {config.accounts.map((a, i) => (
             <div key={i} className="flex flex-wrap items-end gap-2 p-3 border rounded-md">
               <div className="flex-1 min-w-[120px]">
-                <label className="text-xs text-muted-foreground">邮箱</label>
+                <label className="text-xs text-muted-foreground">{t('config.accounts.email')}</label>
                 <Input
                   value={a.email}
                   onChange={(e) => {
@@ -189,7 +191,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="w-24">
-                <label className="text-xs text-muted-foreground">手机</label>
+                <label className="text-xs text-muted-foreground">{t('config.accounts.mobile')}</label>
                 <Input
                   value={a.mobile}
                   onChange={(e) => {
@@ -200,7 +202,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="w-20">
-                <label className="text-xs text-muted-foreground">区号</label>
+                <label className="text-xs text-muted-foreground">{t('config.accounts.areaCode')}</label>
                 <Input
                   value={a.area_code}
                   onChange={(e) => {
@@ -211,7 +213,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="flex-1 min-w-[120px]">
-                <label className="text-xs text-muted-foreground">密码</label>
+                <label className="text-xs text-muted-foreground">{t('config.accounts.password')}</label>
                 <div className="flex items-center gap-1">
                   <Input
                     type={revealedPasswords[i] ? 'text' : 'password'}
@@ -254,7 +256,7 @@ export function ConfigPage() {
               ])
             }
           >
-            <Plus className="h-4 w-4 mr-1" /> 添加账号
+            <Plus className="h-4 w-4 mr-1" /> {t('config.accounts.add')}
           </Button>
         </CardContent>
       </Card>
@@ -263,7 +265,7 @@ export function ConfigPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
-            <Key className="h-5 w-5" /> API Keys
+            <Key className="h-5 w-5" /> {t('config.sections.apiKeys')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -297,7 +299,7 @@ export function ConfigPage() {
                 size="icon"
                 className="shrink-0"
                 onClick={() => copyToClipboard(k.key)}
-                title="复制"
+                title={t('config.apiKeys.copyTitle')}
               >
                 <Copy className="h-4 w-4" />
               </Button>
@@ -305,7 +307,7 @@ export function ConfigPage() {
               <input
                 className="flex-1 min-w-[80px] bg-transparent border-b border-dashed border-muted-foreground/30 text-sm px-1 outline-none focus:border-primary"
                 value={k.description}
-                placeholder="描述"
+                placeholder={t('config.apiKeys.placeholder')}
                 onChange={(e) => {
                   const next = [...config.api_keys];
                   next[i] = { ...next[i], description: e.target.value };
@@ -334,7 +336,7 @@ export function ConfigPage() {
               ]);
             }}
           >
-            <Plus className="h-4 w-4 mr-1" /> 添加 API Key
+            <Plus className="h-4 w-4 mr-1" /> {t('config.apiKeys.add')}
           </Button>
         </CardContent>
       </Card>
@@ -345,26 +347,26 @@ export function ConfigPage() {
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <Badge variant={config.admin.password_set ? 'default' : 'secondary'}>
-              {config.admin.password_set ? '密码已设置' : '密码未设置'}
+              {config.admin.password_set ? t('config.admin.passwordSet') : t('config.admin.passwordNotSet')}
             </Badge>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-sm text-muted-foreground block mb-1">旧密码</label>
+              <label className="text-sm text-muted-foreground block mb-1">{t('config.admin.oldPassword')}</label>
               <Input
                 type="password"
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
-                placeholder="输入旧密码以修改"
+                placeholder={t('config.admin.oldPasswordPlaceholder')}
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground block mb-1">新密码</label>
+              <label className="text-sm text-muted-foreground block mb-1">{t('config.admin.newPassword')}</label>
               <Input
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="至少 6 位"
+                placeholder={t('config.admin.newPasswordPlaceholder')}
               />
             </div>
           </div>
@@ -373,14 +375,14 @@ export function ConfigPage() {
       <Separator className="my-2" />
 
       {/* ── Server (collapsible) ──────────────────────────────── */}
-      <Section title="服务器" icon={Server}>
+      <Section title={t('config.sections.server')} icon={Server}>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <label className="text-sm text-muted-foreground block mb-1">监听地址</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.server.host')}</label>
             <Input value={config.server.host} onChange={(e) => update(['server', 'host'], e.target.value)} />
           </div>
           <div>
-            <label className="text-sm text-muted-foreground block mb-1">端口</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.server.port')}</label>
             <Input
               type="number"
               value={config.server.port}
@@ -388,7 +390,7 @@ export function ConfigPage() {
             />
           </div>
           <div>
-            <label className="text-sm text-muted-foreground block mb-1">CORS 来源（逗号分隔）</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.server.corsOrigins')}</label>
             <Input
               value={config.server.cors_origins.join(', ')}
               onChange={(e) =>
@@ -403,7 +405,7 @@ export function ConfigPage() {
       </Section>
 
       {/* ── DeepSeek (collapsible) ────────────────────────────── */}
-      <Section title="DeepSeek" icon={Cpu}>
+      <Section title={t('config.sections.deepseek')} icon={Cpu}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="text-sm text-muted-foreground block mb-1">API Base</label>
@@ -451,12 +453,12 @@ export function ConfigPage() {
       </Section>
 
       {/* ── Models (collapsible) ──────────────────────────────── */}
-      <Section title="模型类型" icon={Globe}>
+      <Section title={t('config.sections.models')} icon={Globe}>
         <div className="space-y-3">
           {config.deepseek.model_types.map((_, i) => (
             <div key={i} className="flex flex-wrap items-end gap-2 p-3 border rounded-md">
               <div className="flex-1 min-w-[120px]">
-                <label className="text-xs text-muted-foreground">类型名</label>
+                <label className="text-xs text-muted-foreground">{t('config.modelsSection.typeName')}</label>
                 <Input
                   value={config.deepseek.model_types[i]}
                   onChange={(e) => {
@@ -467,7 +469,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="w-20">
-                <label className="text-xs text-muted-foreground">最大输入</label>
+                <label className="text-xs text-muted-foreground">{t('config.modelsSection.maxInput')}</label>
                 <Input
                   type="number"
                   value={config.deepseek.max_input_tokens[i]}
@@ -479,7 +481,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="w-20">
-                <label className="text-xs text-muted-foreground">最大输出</label>
+                <label className="text-xs text-muted-foreground">{t('config.modelsSection.maxOutput')}</label>
                 <Input
                   type="number"
                   value={config.deepseek.max_output_tokens[i]}
@@ -491,7 +493,7 @@ export function ConfigPage() {
                 />
               </div>
               <div className="flex-1 min-w-[120px]">
-                <label className="text-xs text-muted-foreground">别名（可选）</label>
+                <label className="text-xs text-muted-foreground">{t('config.modelsSection.alias')}</label>
                 <Input
                   value={config.deepseek.model_aliases[i] || ''}
                   onChange={(e) => {
@@ -529,16 +531,16 @@ export function ConfigPage() {
               update(['deepseek', 'model_aliases'], [...config.deepseek.model_aliases, '']);
             }}
           >
-            <Plus className="h-4 w-4 mr-1" /> 添加模型类型
+            <Plus className="h-4 w-4 mr-1" /> {t('config.modelsSection.add')}
           </Button>
         </div>
       </Section>
 
       {/* ── Tool Call Tags (collapsible) ──────────────────────── */}
-      <Section title="工具调用标签" icon={Tags}>
+      <Section title={t('config.sections.toolCallTags')} icon={Tags}>
         <div className="space-y-4">
           <div>
-            <label className="text-sm text-muted-foreground block mb-1">额外开始标签</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.toolCallTags.extraStarts')}</label>
             <div className="flex flex-wrap gap-2">
               {config.deepseek.tool_call.extra_starts.map((tag, i) => (
                 <Badge key={i} variant="secondary" className="gap-1">
@@ -569,7 +571,7 @@ export function ConfigPage() {
             </div>
           </div>
           <div>
-            <label className="text-sm text-muted-foreground block mb-1">额外结束标签</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.toolCallTags.extraEnds')}</label>
             <div className="flex flex-wrap gap-2">
               {config.deepseek.tool_call.extra_ends.map((tag, i) => (
                 <Badge key={i} variant="secondary" className="gap-1">
@@ -603,12 +605,12 @@ export function ConfigPage() {
       </Section>
 
       {/* ── Proxy (collapsible) ───────────────────────────────── */}
-      <Section title="代理" icon={Globe}>
+      <Section title={t('config.sections.proxy')} icon={Globe}>
         <div>
-          <label className="text-sm text-muted-foreground block mb-1">代理 URL（留空禁用）</label>
+            <label className="text-sm text-muted-foreground block mb-1">{t('config.proxy.url')}</label>
           <Input
             value={config.proxy.url || ''}
-            placeholder="http://127.0.0.1:7890"
+            placeholder={t('config.proxy.placeholder')}
             onChange={(e) => update(['proxy', 'url'], e.target.value || null)}
           />
         </div>
@@ -619,11 +621,11 @@ export function ConfigPage() {
       {/* ── Action buttons ────────────────────────────────────── */}
       <div className="flex justify-end gap-3">
         <Button variant="outline" onClick={handleCancel} disabled={saving}>
-          取消
+          {t('config.cancel')}
         </Button>
         <Button onClick={handleSave} disabled={saving}>
           <Save className="h-5 w-5 mr-2" />
-          {saving ? '保存中...' : '保存配置'}
+          {saving ? t('config.saving') : t('config.save')}
         </Button>
       </div>
     </div>
