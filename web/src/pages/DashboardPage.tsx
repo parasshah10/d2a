@@ -21,14 +21,15 @@ import {
   Coins,
   Box,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
-function formatUptime(secs: number): string {
+function formatUptime(secs: number, t: (key: string) => string): string {
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}时 ${m}分`;
-  if (h > 0) return `${h}时 ${m}分`;
-  return `${m}分`;
+  if (d > 0) return `${d}${t('dashboard.stats.days')} ${h}${t('dashboard.stats.hours')} ${m}${t('dashboard.stats.minutes')}`;
+  if (h > 0) return `${h}${t('dashboard.stats.hours')} ${m}${t('dashboard.stats.minutes')}`;
+  return `${m}${t('dashboard.stats.minutes')}`;
 }
 
 function formatLatency(ms: number): string {
@@ -44,6 +45,7 @@ function formatTokens(n: number): string {
 }
 
 export function DashboardPage() {
+  const { t } = useTranslation();
   const { data: status } = useSWR<AdminStatusResponse>(
     '/admin/api/status',
     (url) => apiFetch<AdminStatusResponse>(url),
@@ -63,13 +65,13 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">概览</h1>
+      <h1 className="text-2xl font-bold">{t('dashboard.title')}</h1>
 
       {/* Stats cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">总请求</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.totalRequests')}</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -79,7 +81,7 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">成功率</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.successRate')}</CardTitle>
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -99,7 +101,7 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">平均延迟</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.avgLatency')}</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -111,12 +113,12 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">运行时长</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.uptime')}</CardTitle>
             <Zap className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {stats ? formatUptime(stats.uptime_secs) : '-'}
+              {stats ? formatUptime(stats.uptime_secs, t) : '-'}
             </div>
           </CardContent>
         </Card>
@@ -126,7 +128,7 @@ export function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">总 Token</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.totalTokens')}</CardTitle>
             <Coins className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -138,7 +140,7 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">输入 Token</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.promptTokens')}</CardTitle>
             <Coins className="h-4 w-4 text-blue-400" />
           </CardHeader>
           <CardContent>
@@ -150,7 +152,7 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">输出 Token</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('dashboard.stats.completionTokens')}</CardTitle>
             <Coins className="h-4 w-4 text-emerald-400" />
           </CardHeader>
           <CardContent>
@@ -167,17 +169,17 @@ export function DashboardPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Box className="h-5 w-5" />
-              模型统计
+              {t('dashboard.stats.models')}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>模型</TableHead>
-                  <TableHead className="text-right">请求数</TableHead>
-                  <TableHead className="text-right">输入 Token</TableHead>
-                  <TableHead className="text-right">输出 Token</TableHead>
+                  <TableHead>{t('dashboard.stats.model')}</TableHead>
+                  <TableHead className="text-right">{t('dashboard.stats.requests')}</TableHead>
+                  <TableHead className="text-right">{t('dashboard.stats.prompt')}</TableHead>
+                  <TableHead className="text-right">{t('dashboard.stats.completion')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -200,30 +202,30 @@ export function DashboardPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Users className="h-5 w-5" />
-            账号池
+            {t('dashboard.accountPool.title')}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex gap-6">
             <div className="text-center">
               <div className="text-3xl font-bold">{status?.total ?? '-'}</div>
-              <div className="text-sm text-muted-foreground">总数</div>
+              <div className="text-sm text-muted-foreground">{t('dashboard.accountPool.total')}</div>
             </div>
             <div className="text-center">
               <div className="text-3xl font-bold text-green-600">{status?.idle ?? '-'}</div>
-              <div className="text-sm text-muted-foreground">空闲</div>
+              <div className="text-sm text-muted-foreground">{t('dashboard.accountPool.idle')}</div>
             </div>
             <div className="text-center">
               <div className="text-3xl font-bold text-amber-500">{status?.busy ?? '-'}</div>
-              <div className="text-sm text-muted-foreground">忙碌</div>
+              <div className="text-sm text-muted-foreground">{t('dashboard.accountPool.busy')}</div>
             </div>
             <div className="text-center">
               <div className="text-3xl font-bold text-yellow-500">{status?.error ?? '-'}</div>
-              <div className="text-sm text-muted-foreground">异常</div>
+              <div className="text-sm text-muted-foreground">{t('dashboard.accountPool.error')}</div>
             </div>
             <div className="text-center">
               <div className="text-3xl font-bold text-red-600">{status?.invalid ?? '-'}</div>
-              <div className="text-sm text-muted-foreground">失效</div>
+              <div className="text-sm text-muted-foreground">{t('dashboard.accountPool.invalid')}</div>
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">

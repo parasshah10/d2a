@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/use-auth';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import {
   LayoutDashboard,
   Boxes,
@@ -9,15 +10,10 @@ import {
   LogOut,
   ScrollText,
 } from 'lucide-react';
-
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: '概览' },
-  { to: '/models', icon: Boxes, label: '模型' },
-  { to: '/config', icon: Settings, label: '配置' },
-  { to: '/logs', icon: ScrollText, label: '日志' },
-];
+import { useTranslation } from 'react-i18next';
 
 export function Layout() {
+  const { t } = useTranslation();
   const { logout } = useAuth();
   const navigate = useNavigate();
 
@@ -25,6 +21,13 @@ export function Layout() {
     logout();
     navigate('/login');
   };
+
+  const navItems = [
+    { to: '/', icon: LayoutDashboard, label: t('nav.dashboard') },
+    { to: '/models', icon: Boxes, label: t('nav.models') },
+    { to: '/config', icon: Settings, label: t('nav.config') },
+    { to: '/logs', icon: ScrollText, label: t('nav.logs') },
+  ];
 
   return (
     <div className="min-h-screen flex bg-background">
@@ -54,14 +57,15 @@ export function Layout() {
           ))}
         </nav>
         <Separator />
-        <div className="p-2">
+        <div className="p-2 space-y-2">
+          <LanguageSwitcher />
           <Button
             variant="ghost"
             className="w-full justify-start gap-3 text-muted-foreground"
             onClick={handleLogout}
           >
             <LogOut className="h-4 w-4" />
-            退出
+            {t('nav.logout')}
           </Button>
         </div>
       </aside>

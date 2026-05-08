@@ -6,8 +6,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { KeyRound, Shield } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export function LoginPage() {
+  const { t } = useTranslation();
   const { login, setup } = useAuth();
   const navigate = useNavigate();
   const [password, setPassword] = useState('');
@@ -39,11 +41,11 @@ export function LoginPage() {
     e.preventDefault();
     setError('');
     if (password.length < 6) {
-      setError('密码长度至少 6 位');
+      setError(t('login.errorPasswordLength'));
       return;
     }
     if (password !== confirmPassword) {
-      setError('两次输入的密码不一致');
+      setError(t('login.errorPasswordMismatch'));
       return;
     }
     setLoading(true);
@@ -52,7 +54,7 @@ export function LoginPage() {
     if (result.success) {
       navigate('/', { replace: true });
     } else {
-      setError(result.error || '设置失败');
+      setError(result.error || t('login.errorSetupFailed'));
     }
   };
 
@@ -65,14 +67,14 @@ export function LoginPage() {
     if (result.success) {
       navigate('/', { replace: true });
     } else {
-      setError(result.error || '登录失败');
+      setError(result.error || t('login.errorLoginFailed'));
     }
   };
 
   if (needsSetup === null) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <p className="text-muted-foreground">检测中...</p>
+        <p className="text-muted-foreground">{t('login.checking')}</p>
       </div>
     );
   }
@@ -88,31 +90,31 @@ export function LoginPage() {
               <KeyRound className="h-6 w-6 text-primary" />
             )}
           </div>
-          <CardTitle className="text-2xl">DS Free API</CardTitle>
+          <CardTitle className="text-2xl">{t('login.title')}</CardTitle>
           <CardDescription>
-            {needsSetup ? '首次使用，请设置管理密码' : '输入密码以访问管理面板'}
+            {needsSetup ? t('login.setupDescription') : t('login.loginDescription')}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {needsSetup ? (
             <form onSubmit={handleSetup} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="password">设置密码</Label>
+                <Label htmlFor="password">{t('login.setPasswordLabel')}</Label>
                 <Input
                   id="password"
                   type="password"
-                  placeholder="至少 6 位"
+                  placeholder={t('login.setPasswordPlaceholder')}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={loading}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="confirm">确认密码</Label>
+                <Label htmlFor="confirm">{t('login.confirmPasswordLabel')}</Label>
                 <Input
                   id="confirm"
                   type="password"
-                  placeholder="再次输入密码"
+                  placeholder={t('login.confirmPasswordPlaceholder')}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   disabled={loading}
@@ -120,17 +122,17 @@ export function LoginPage() {
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading || !password}>
-                {loading ? '设置中...' : '设置密码'}
+                {loading ? t('login.settingUp') : t('login.setupButton')}
               </Button>
             </form>
           ) : (
             <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="password">密码</Label>
+                <Label htmlFor="password">{t('login.passwordLabel')}</Label>
                 <Input
                   id="password"
                   type="password"
-                  placeholder="管理密码"
+                  placeholder={t('login.passwordPlaceholder')}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={loading}
@@ -138,7 +140,7 @@ export function LoginPage() {
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading || !password}>
-                {loading ? '验证中...' : '登录'}
+                {loading ? t('login.verifying') : t('login.loginButton')}
               </Button>
             </form>
           )}

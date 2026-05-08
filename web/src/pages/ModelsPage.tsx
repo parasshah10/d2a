@@ -3,8 +3,10 @@ import { apiFetch, type ModelListResponse } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Boxes } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export function ModelsPage() {
+  const { t } = useTranslation();
   const { data: models } = useSWR<ModelListResponse>(
     '/admin/api/models',
     (url: string) => apiFetch<ModelListResponse>(url),
@@ -14,7 +16,7 @@ export function ModelsPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold flex items-center gap-2">
         <Boxes className="h-6 w-6" />
-        模型列表
+        {t('models.title')}
       </h1>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -30,19 +32,19 @@ export function ModelsPage() {
             </CardHeader>
             <CardContent>
               <div className="text-sm text-muted-foreground space-y-1">
-                <div>类型: {model.object}</div>
+                <div>{t('models.type')}: {model.object}</div>
               </div>
             </CardContent>
           </Card>
         ))}
         {!models && (
           <div className="col-span-full text-center text-muted-foreground py-8">
-            加载中...
+            {t('models.loading')}
           </div>
         )}
         {models && models.data.length === 0 && (
           <div className="col-span-full text-center text-muted-foreground py-8">
-            暂无模型
+            {t('models.empty')}
           </div>
         )}
       </div>
