@@ -111,7 +111,7 @@ This means the file tree does not directly map to the public API. To understand 
 On tag push (`.github/workflows/release.yml`):
 
 ```
-build-frontend (npm ci + npm run build)
+build-frontend (bun install --frozen-lockfile + bun run build)
   ├── build-linux-gnu (cargo build)    │
   ├── build-linux-musl (cross/cargo)   │── release (tar.gz + zip)
   ├── build-macos (cargo build)  │
@@ -124,7 +124,7 @@ before compiling Rust, so `rust_embed` embeds the real frontend assets.
 
 ### Frontend (`web/`)
 
-Vite + React + shadcn/ui SPA under `web/`. Built by `npm run build` in `web/`.
+Vite + React + shadcn/ui SPA under `web/`. Built by `bun run build` in `web/` (typecheck: `bun run typecheck`).
 The binary embeds `web/dist/` via `rust_embed` at compile time.
 
 ```
@@ -155,7 +155,7 @@ edits all sections (accounts, api_keys, server, deepseek, models, proxy, tool_ca
 submits via `PUT /admin/api/config` (full replace + hot-reload). Passwords/key values
 sent as `***`/empty are merged with existing values server-side.
 
-**Dev mode (HMR)**: Run `cd web && npm run dev` (Vite HMR) alongside `just serve`.
+**Dev mode (HMR)**: Run `cd web && bun run dev` (Vite HMR) alongside `just serve`.
 Backend reads from `web/dist/` filesystem when available.
 ---
 

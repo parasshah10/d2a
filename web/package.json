@@ -3,10 +3,11 @@
   "private": true,
   "version": "0.2.6",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": { "bun": ">=1.3" },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

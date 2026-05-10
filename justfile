@@ -12,9 +12,9 @@ check:
   cargo outdated --exit-code 1 --root-deps-only
   cargo machete          
 
-# Build + lint frontend (npm ci, npm run build, npm run lint)
+# Build + lint frontend (bun install --frozen-lockfile, bun run typecheck + build + lint)
 check-web:
-  cd web && npm ci && npm run build && npm run lint
+  cd web && bun install --frozen-lockfile && bun run typecheck && bun run build && bun run lint
 
 
 # Run unified protocol debug CLI (replaces ds-core-cli / openai-adapter-cli)
@@ -32,7 +32,7 @@ test-adapter-response *ARGS:
 
 # Run HTTP server（自动构建最新前端 -> 启动后端）
 serve *ARGS:
-  (cd web && npm run build) && cargo run -- "$@"
+  (cd web && bun run build) && cargo run -- "$@"
 
 # Basic: 基础功能测试（两端点）
 e2e-basic *ARGS:
@@ -48,4 +48,4 @@ e2e-stress *ARGS:
 
 # Start server with e2e test config
 e2e-serve:
-  cargo run -- -c py-e2e-tests/config.toml
+  (cd web && bun run build) && cargo run -- -c py-e2e-tests/config.toml

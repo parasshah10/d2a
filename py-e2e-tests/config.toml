@@ -129,9 +129,9 @@ cors_origins = ["http://localhost:22217"]
 [proxy]
 
 [admin]
-password_hash = "$2b$12$JhfD18V4o.vFiSpVCZPj8OXGs7yuT7b0X1v6IOI7db.3P0iaDEEku"
-jwt_secret = "0433ae158b554461e09c06c0ec127b3b1909850b0f53f05602d2eb24ee4b39c2"
-jwt_issued_at = 1777975160
+password_hash = "$2b$12$p7MMNAKUkQVeJp5kgjFMU.BlMKi6Qo0r3KwmpruM4jlzRNaoDC5Sm"
+jwt_secret = "ec6568577f099c2fb91d84923cd9419c58e7b8a9c2564fcc3361debdade72f7b"
+jwt_issued_at = 1778399103
 
 [[api_keys]]
 key = "sk-test"

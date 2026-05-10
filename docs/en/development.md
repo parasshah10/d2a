@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust **1.95.0+** (see `rust-toolchain.toml`)
-- Node.js **18+** (for web panel development)
+- Bun **1.3+** (for web panel development and build)
 - `cmake`, `g++`, `libclang-dev` (required to compile BoringSSL for `rquest`)
 - `just` command runner (used for `just serve` / `just check` etc.)
 
@@ -14,7 +14,7 @@
 cp config.example.toml config.toml
 
 # 2. Build web frontend (compiled into binary via rust_embed, rebuild on frontend changes)
-cd web && npm install && npm run build && cd ..
+cd web && bun install && bun run build && cd ..
 
 # 3. Start dev server
 just serve
@@ -22,7 +22,7 @@ just serve
 
 Access `http://localhost:22217` — it redirects to the admin panel.
 
-> **Frontend HMR development**: Run `cd web && npm run dev` (Vite HMR) alongside
+> **Frontend HMR development**: Run `cd web && bun run dev` (Vite HMR) alongside
 > `just serve`. The backend reads files from the `web/dist/` directory when available,
 > so frontend changes reflect immediately without rebuilding the binary.
 
@@ -30,7 +30,7 @@ Access `http://localhost:22217` — it redirects to the admin panel.
 
 ```bash
 # 1. Build web frontend
-cd web && npm install && npm run build && cd ..
+cd web && bun install && bun run build && cd ..
 
 # 2. Build release binary
 cargo build --release
@@ -48,7 +48,7 @@ No extra files needed for deployment.
 On tag push, GitHub Actions (`.github/workflows/release.yml`) runs:
 
 ```
-build-frontend (npm ci + npm run build)
+build-frontend (bun install --frozen-lockfile + bun run build)
   ├── build-linux-gnu (cross)    │
   ├── build-linux-musl (cross)   │── release (tar.gz + zip)
   ├── build-macos (cargo build)  │
@@ -78,7 +78,7 @@ Local Docker image build:
 
 ```bash
 # 1. Build frontend + cross-compile binary
-cd web && npm install && npm run build && cd ..
+cd web && bun install && bun run build && cd ..
 cargo zigbuild --release --target x86_64-unknown-linux-gnu
 
 # 2. Build Docker image
