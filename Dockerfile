@@ -1,16 +1,22 @@
-# ── Stage 0: cargo-chef installer ─────────────────────────────────────────────  
+# ── Stage 0: Build Frontend (Bun) ─────────────────────────────────────────────
+FROM oven/bun:1 AS frontend
+WORKDIR /app/web
+COPY web/ ./
+RUN bun install --frozen-lockfile
+RUN bun run build
+
+# ── Stage 1: cargo-chef installer ─────────────────────────────────────────────  
 FROM rust:slim-bookworm AS chef  
 RUN cargo install cargo-chef --locked
 WORKDIR /app  
   
-# ── Stage 1a: Generate dependency recipe ──────────────────────────────────────  
+# ── Stage 2a: Generate dependency recipe ──────────────────────────────────────  
 FROM chef AS planner  
 COPY . .  
 RUN cargo chef prepare --recipe-path recipe.json  
   
-# ── Stage 1b: Build dependencies only (cached layer) ──────────────────────────  
+# ── Stage 2b: Build dependencies only (cached layer) ──────────────────────────  
 FROM chef AS builder  
-# Added git (to fix the BoringSSL panic), golang, clang, and others
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -27,11 +33,15 @@ RUN apt-get update && apt-get install -y \
 COPY --from=planner /app/recipe.json recipe.json  
 RUN cargo chef cook --release --recipe-path recipe.json  
   
-# ── Stage 1c: Build application code ──────────────────────────────────────────  
+# ── Stage 2c: Build application code ──────────────────────────────────────────  
 COPY . .  
+
+# 🚀 NEW: Copy the built frontend from the Bun stage into the Rust stage!
+COPY --from=frontend /app/web/dist ./web/dist
+
 RUN cargo build --release  
   
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────  
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────  
 FROM debian:bookworm-slim  
   
 RUN apt-get update && apt-get install -y ca-certificates && \  
