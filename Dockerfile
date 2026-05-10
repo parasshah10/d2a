@@ -10,7 +10,7 @@ RUN cargo chef prepare --recipe-path recipe.json
   
 # ── Stage 1b: Build dependencies only (cached layer) ──────────────────────────  
 FROM chef AS builder  
-# Install C compilers, CMake, Go, and Clang for boring-sys2
+# Added git (to fix the BoringSSL panic), golang, clang, and others
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -18,7 +18,10 @@ RUN apt-get update && apt-get install -y \
     cmake \
     clang \
     libclang-dev \
-    golang && \
+    golang \
+    git \
+    perl \
+    ninja-build && \
     rm -rf /var/lib/apt/lists/*  
     
 COPY --from=planner /app/recipe.json recipe.json  
