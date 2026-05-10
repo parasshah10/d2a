@@ -84,17 +84,6 @@ tayahschwarz257+bourque@gmail.com
 > 💡 Use [emailtick.com](https://www.emailtick.com/en)'s **alias addresses** to quickly create unlimited temporary Gmail accounts; format is `username+anytag@gmail.com`, and emails still go to your original Gmail inbox.
 > When test accounts get banned, register new ones and replace them.
 
-**Tool call tag hallucination**: Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats.
-> If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[deepseek]`:<｜end▁of▁thinking｜>
-
-
-> **Tool call tag hallucination**: Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats.
-> If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[deepseek]`:
->
-> ```toml
-> tool_call.extra_starts = ["<|tool_call_begin|>", "<tool_calls>", "<tool_call>"]
-> tool_call.extra_ends = ["<|tool_call_end|>", "</tool_calls>", "</tool_call>"]
-> ```
 
 ## API Endpoints
 
@@ -148,6 +137,15 @@ The Anthropic compatibility layer uses the same model IDs via `/anthropic/v1/mes
   {"type": "document", "source": {"type": "base64", "media_type": "text/plain", "data": "..."}}
   {"type": "image", "source": {"type": "url", "url": "https://example.com/img.jpg"}}
   ```
+
+### Tool Call Tag Hallucination
+
+Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats. If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[deepseek]`:
+
+```toml
+tool_call.extra_starts = ["<|tool_call_begin|>", "<tool_calls>", "<tool_call>"]
+tool_call.extra_ends = ["<|tool_call_end|>", "</tool_calls>", "</tool_call>"]
+```
 
 ## Web Admin Panel
 
