@@ -65,14 +65,27 @@ docker compose -f docker-compose.yaml up -d
 以下账号密码统一为 `test12345`：
 
 ```text
-idyllic4202@wplacetools.com
-espialeilani+grace@gmail.com
-ar.r.o.g.anc.e.p.c.hz.xp@gmail.com
-theobald2798+gladden@gmail.com
-vj.zh.z.h.d.b.b.d.udhj.db@gmail.com
+amzhoxvzidbke+castaneda@gmail.com
+veritastollonics+kincaid@gmail.com
+debatefeatgdcdve+mccutcheon@gmail.com
+sksjhsmshsmsnbv+ritter@gmail.com
+slsnvskshevvekeb+kenny@gmail.com
+slsnvskshevvekeb+halcomb@gmail.com
+wkwjhskssksbg+calloway@gmail.com
+vsigsiehvdidod+oden@gmail.com
+faceliftery+redding@gmail.com
+tayahschwarz257+choate@gmail.com
+dishdeifybkaoup+geer@gmail.com
+debatefeatgdcdve+keenan@gmail.com
+arrogancepchzxp+true@gmail.com
+arrogancepchzxp+shipley@gmail.com
+tayahschwarz257+bourque@gmail.com
 ```
 
-> **工具调用标签幻觉**：内置模糊匹配（全角 `｜`<=>`|`、`▁`<=>`_`），自动覆盖大多数变体。
+> 💡 使用 [emailtick.com](https://www.emailtick.com/zh) 的**别名地址**可快速创建无限数量的 Gmail 临时账号；格式为 `用户名+任意标签@gmail.com`，邮件仍会投递到原始 Gmail 收件箱。
+> 测试账号被封后可自行注册替换。
+
+**工具调用标签幻觉**：内置模糊匹配（全角 `｜`<=>`|`、`▁`<=>`_`），自动覆盖大多数变体。
 > 若模型输出格式不同的回退标签，可在控制面板中添加, 或者在 `config.toml` 的 `[deepseek]` 下追加：
 >
 > ```toml

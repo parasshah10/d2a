@@ -64,12 +64,29 @@ The `config/` and `data/` directories are bind-mounted into the container — co
 All accounts use password `test12345`:
 
 ```text
-idyllic4202@wplacetools.com
-espialeilani+grace@gmail.com
-ar.r.o.g.anc.e.p.c.hz.xp@gmail.com
-theobald2798+gladden@gmail.com
-vj.zh.z.h.d.b.b.d.udhj.db@gmail.com
+amzhoxvzidbke+castaneda@gmail.com
+veritastollonics+kincaid@gmail.com
+debatefeatgdcdve+mccutcheon@gmail.com
+sksjhsmshsmsnbv+ritter@gmail.com
+slsnvskshevvekeb+kenny@gmail.com
+slsnvskshevvekeb+halcomb@gmail.com
+wkwjhskssksbg+calloway@gmail.com
+vsigsiehvdidod+oden@gmail.com
+faceliftery+redding@gmail.com
+tayahschwarz257+choate@gmail.com
+dishdeifybkaoup+geer@gmail.com
+debatefeatgdcdve+keenan@gmail.com
+arrogancepchzxp+true@gmail.com
+arrogancepchzxp+shipley@gmail.com
+tayahschwarz257+bourque@gmail.com
 ```
+
+> 💡 Use [emailtick.com](https://www.emailtick.com/en)'s **alias addresses** to quickly create unlimited temporary Gmail accounts; format is `username+anytag@gmail.com`, and emails still go to your original Gmail inbox.
+> When test accounts get banned, register new ones and replace them.
+
+**Tool call tag hallucination**: Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats.
+> If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[deepseek]`:<｜end▁of▁thinking｜>
+
 
 > **Tool call tag hallucination**: Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats.
 > If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[deepseek]`:
