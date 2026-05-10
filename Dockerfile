@@ -39,4 +39,4 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh && \
 USER 1000  
   
 EXPOSE 7860  
-ENTRYPOINT["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
