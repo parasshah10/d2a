@@ -1,7 +1,10 @@
 # ── Stage 0: Build Frontend (Bun) ─────────────────────────────────────────────
 FROM oven/bun:1 AS frontend
+WORKDIR /app
+# Copy BOTH directories because Vite reads from py-e2e-tests/config.toml
+COPY web/ ./web/
+COPY py-e2e-tests/ ./py-e2e-tests/
 WORKDIR /app/web
-COPY web/ ./
 RUN bun install --frozen-lockfile
 RUN bun run build
 
@@ -36,7 +39,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # ── Stage 2c: Build application code ──────────────────────────────────────────  
 COPY . .  
 
-# 🚀 NEW: Copy the built frontend from the Bun stage into the Rust stage!
+# 🚀 Copy the built frontend from the Bun stage into the Rust stage!
 COPY --from=frontend /app/web/dist ./web/dist
 
 RUN cargo build --release  
