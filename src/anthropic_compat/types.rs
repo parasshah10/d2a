@@ -372,6 +372,7 @@ pub enum MessagesResponseChunk {
 
 impl MessagesResponseChunk {
     /// Extract output_tokens from MessageDelta events
+    #[must_use]
     pub fn output_tokens(&self) -> Option<u32> {
         match self {
             Self::MessageDelta { output_tokens, .. } => *output_tokens,
@@ -379,6 +380,7 @@ impl MessagesResponseChunk {
         }
     }
 
+    #[must_use]
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::MessageStart { .. } => "message_start",

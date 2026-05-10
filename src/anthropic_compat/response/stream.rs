@@ -131,9 +131,8 @@ impl StreamState {
             self.completion_tokens = Some(u.completion_tokens);
         }
 
-        let choice = match chunk.choices.first() {
-            Some(c) => c,
-            None => return events,
+        let Some(choice) = chunk.choices.first() else {
+            return events;
         };
 
         let delta = &choice.delta;
@@ -185,15 +184,18 @@ impl StreamState {
         {
             events.extend(self.transition_to(BlockKind::ToolUse));
             for call in calls {
-                let (name, partial_json) = if let Some(ref func) = call.function {
-                    (func.name.clone(), func.arguments.clone())
-                } else if let Some(ref custom) = call.custom {
-                    let json =
-                        serde_json::to_string(&custom.input).unwrap_or_else(|_| "{}".to_string());
-                    (custom.name.clone(), json)
-                } else {
-                    (String::new(), "{}".to_string())
-                };
+                let (name, partial_json) = call
+                    .function
+                    .as_ref()
+                    .map(|func| (func.name.clone(), func.arguments.clone()))
+                    .or_else(|| {
+                        call.custom.as_ref().map(|custom| {
+                            let json = serde_json::to_string(&custom.input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            (custom.name.clone(), json)
+                        })
+                    })
+                    .unwrap_or_else(|| (String::new(), "{}".to_string()));
                 events.push(MessagesResponseChunk::ContentBlockStart {
                     index: self.block_index,
                     content_block: ResponseContentBlock::ToolUse {

@@ -91,11 +91,9 @@ fn fuzzy_match_tag<'a>(haystack: &'a str, partial: &str) -> Option<(usize, &'a s
 
 fn match_start_tag<'a>(s: &'a str, tag: &str) -> Option<(usize, &'a str)> {
     let partial = tag.trim_end_matches('>');
-    if let Some(pos) = s.find(partial) {
-        Some((pos, &s[pos..pos + partial.len()]))
-    } else {
-        fuzzy_match_tag(s, partial)
-    }
+    s.find(partial)
+        .map(|pos| (pos, &s[pos..pos + partial.len()]))
+        .or_else(|| fuzzy_match_tag(s, partial))
 }
 
 pub(crate) fn contains_start_tag_with(s: &str, cfg: &TagConfig) -> bool {
@@ -294,7 +292,10 @@ fn repair_json(s: &str) -> Option<String> {
 }
 
 pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
-    parse_tool_calls_with(xml, &TagConfig::from_config(&Default::default()))
+    parse_tool_calls_with(
+        xml,
+        &TagConfig::from_config(&crate::config::ToolCallTagConfig::default()),
+    )
 }
 
 pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall>, String)> {
@@ -317,18 +318,17 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
             if json_str.trim() == "[]" {
                 return None;
             }
-            match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
-                Ok(a) => a,
-                Err(_) => {
-                    let repaired = repair_json(json_str).unwrap_or_default();
-                    let obj_str = repaired.trim_start_matches('[');
-                    let obj_start = obj_str.find('{')?;
-                    let obj_end = obj_str.rfind('}').map(|p| p + 1).unwrap_or(obj_str.len());
-                    serde_json::from_str(&obj_str[obj_start..obj_end])
-                        .ok()
-                        .filter(|v: &serde_json::Value| v.is_object())
-                        .map(|v| vec![v])?
-                }
+            if let Ok(a) = serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
+                a
+            } else {
+                let repaired = repair_json(json_str).unwrap_or_default();
+                let obj_str = repaired.trim_start_matches('[');
+                let obj_start = obj_str.find('{')?;
+                let obj_end = obj_str.rfind('}').map(|p| p + 1).unwrap_or(obj_str.len());
+                serde_json::from_str(&obj_str[obj_start..obj_end])
+                    .ok()
+                    .filter(|v: &serde_json::Value| v.is_object())
+                    .map(|v| vec![v])?
             }
         }
         None => {
@@ -354,19 +354,20 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
     let mut calls = Vec::new();
     for item in arr {
         let name = item.get("name")?.as_str()?.to_string();
-        let arguments = match item.get("arguments") {
-            Some(v) => {
-                if let Some(s) = v.as_str() {
-                    serde_json::from_str::<serde_json::Value>(s)
-                        .ok()
-                        .and_then(|obj| serde_json::to_string(&obj).ok())
-                        .unwrap_or_else(|| s.to_string())
-                } else {
-                    serde_json::to_string(v).unwrap_or_else(|_| "{}".into())
-                }
-            }
-            None => "{}".into(),
-        };
+        let arguments = item
+            .get("arguments")
+            .map(|v| {
+                v.as_str().map_or_else(
+                    || serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
+                    |s| {
+                        serde_json::from_str::<serde_json::Value>(s)
+                            .ok()
+                            .and_then(|obj| serde_json::to_string(&obj).ok())
+                            .unwrap_or_else(|| s.to_string())
+                    },
+                )
+            })
+            .unwrap_or_else(|| "{}".into());
         calls.push(ToolCall {
             id: next_call_id(),
             ty: "function".to_string(),
@@ -378,7 +379,7 @@ pub fn parse_tool_calls_with(xml: &str, cfg: &TagConfig) -> Option<(Vec<ToolCall
     if calls.is_empty() {
         return None;
     }
-    let remaining = xml[..start].to_string() + &xml[end..];
+    let remaining = format!("{}{}", &xml[..start], &xml[end..]);
     Some((calls, remaining))
 }
 
@@ -432,7 +433,7 @@ fn parse_invoke_calls(inner: &str, prefix: &str, suffix: &str) -> Option<(Vec<To
     if calls.is_empty() {
         return None;
     }
-    Some((calls, prefix.to_string() + suffix))
+    Some((calls, format!("{prefix}{suffix}")))
 }
 
 fn make_end_chunk(
@@ -546,9 +547,8 @@ where
 
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(mut chunk))) => {
-                    let choice = match chunk.choices.first_mut() {
-                        Some(c) => c,
-                        None => return Poll::Ready(Some(Ok(chunk))),
+                    let Some(choice) = chunk.choices.first_mut() else {
+                        return Poll::Ready(Some(Ok(chunk)));
                     };
 
                     if let Some(content) = choice.delta.content.take() {
@@ -580,13 +580,13 @@ where
                                             if before.is_empty() {
                                                 *this.state = ToolParseState::CollectingXml {
                                                     buf: rest,
-                                                    start_tag: start_tag.clone(),
+                                                    start_tag,
                                                 };
                                             } else {
                                                 choice.delta.content = Some(before);
                                                 *this.state = ToolParseState::CollectingXml {
                                                     buf: rest,
-                                                    start_tag: start_tag.clone(),
+                                                    start_tag,
                                                 };
                                             }
                                             continue;
@@ -625,26 +625,25 @@ where
                                     if before.is_empty() {
                                         *this.state = ToolParseState::CollectingXml {
                                             buf: rest,
-                                            start_tag: start_tag.clone(),
+                                            start_tag,
                                         };
                                         continue;
                                     }
                                     choice.delta.content = Some(before);
                                     *this.state = ToolParseState::CollectingXml {
                                         buf: rest,
-                                        start_tag: start_tag.clone(),
+                                        start_tag,
                                     };
                                     return Poll::Ready(Some(Ok(chunk)));
-                                } else {
-                                    let safe =
-                                        floor_char_boundary(buffer, buffer.len().saturating_sub(W));
-                                    if safe > 0 {
-                                        choice.delta.content = Some(buffer[..safe].to_string());
-                                        buffer.drain(..safe);
-                                        return Poll::Ready(Some(Ok(chunk)));
-                                    }
-                                    continue;
                                 }
+                                let safe =
+                                    floor_char_boundary(buffer, buffer.len().saturating_sub(W));
+                                if safe > 0 {
+                                    choice.delta.content = Some(buffer[..safe].to_string());
+                                    buffer.drain(..safe);
+                                    return Poll::Ready(Some(Ok(chunk)));
+                                }
+                                continue;
                             }
 
                             ToolParseState::CollectingXml { buf, start_tag } => {
@@ -704,50 +703,49 @@ where
                                 return Poll::Ready(None);
                             }
                         }
-                    } else {
-                        match &mut this.state {
-                            ToolParseState::Detecting { buffer } => {
-                                if choice.finish_reason.is_some() {
-                                    if !buffer.is_empty() {
-                                        choice.delta.content = Some(std::mem::take(buffer));
-                                    }
-                                    return Poll::Ready(Some(Ok(chunk)));
+                    }
+                    match &mut this.state {
+                        ToolParseState::Detecting { buffer } => {
+                            if choice.finish_reason.is_some() {
+                                if !buffer.is_empty() {
+                                    choice.delta.content = Some(std::mem::take(buffer));
                                 }
                                 return Poll::Ready(Some(Ok(chunk)));
                             }
-                            ToolParseState::CollectingXml { buf, start_tag: _ } => {
-                                if choice.finish_reason.is_some() {
-                                    let flushed = std::mem::take(buf);
-                                    if let Some((calls, _)) = parse_tool_calls(&flushed) {
-                                        debug!(target: "adapter", "tool_parser 流结束时解析出 {} 个工具调用", calls.len());
-                                        choice.delta.tool_calls = Some(calls);
-                                        if choice.finish_reason == Some("stop") {
-                                            choice.finish_reason = Some("tool_calls");
-                                        }
-                                    } else {
-                                        warn!(target: "adapter", "tool_parser finish→请求修复");
-                                        *this.state = ToolParseState::Done;
-                                        return Poll::Ready(Some(Err(
-                                            OpenAIAdapterError::ToolCallRepairNeeded(flushed),
-                                        )));
+                            return Poll::Ready(Some(Ok(chunk)));
+                        }
+                        ToolParseState::CollectingXml { buf, start_tag: _ } => {
+                            if choice.finish_reason.is_some() {
+                                let flushed = std::mem::take(buf);
+                                if let Some((calls, _)) = parse_tool_calls(&flushed) {
+                                    debug!(target: "adapter", "tool_parser 流结束时解析出 {} 个工具调用", calls.len());
+                                    choice.delta.tool_calls = Some(calls);
+                                    if choice.finish_reason == Some("stop") {
+                                        choice.finish_reason = Some("tool_calls");
                                     }
+                                } else {
+                                    warn!(target: "adapter", "tool_parser finish→请求修复");
                                     *this.state = ToolParseState::Done;
-                                    return Poll::Ready(Some(Ok(chunk)));
+                                    return Poll::Ready(Some(Err(
+                                        OpenAIAdapterError::ToolCallRepairNeeded(flushed),
+                                    )));
                                 }
+                                *this.state = ToolParseState::Done;
                                 return Poll::Ready(Some(Ok(chunk)));
                             }
-                            ToolParseState::Done => {
-                                if !*this.finish_emitted {
-                                    *this.finish_emitted = true;
-                                    let mut end =
-                                        make_end_chunk(this.model, Delta::default(), "tool_calls");
-                                    if let Some(ref u) = chunk.usage {
-                                        end.usage = Some(u.clone());
-                                    }
-                                    return Poll::Ready(Some(Ok(end)));
+                            return Poll::Ready(Some(Ok(chunk)));
+                        }
+                        ToolParseState::Done => {
+                            if !*this.finish_emitted {
+                                *this.finish_emitted = true;
+                                let mut end =
+                                    make_end_chunk(this.model, Delta::default(), "tool_calls");
+                                if let Some(ref u) = chunk.usage {
+                                    end.usage = Some(u.clone());
                                 }
-                                return Poll::Ready(None);
+                                return Poll::Ready(Some(Ok(end)));
                             }
+                            return Poll::Ready(None);
                         }
                     }
                 }
@@ -779,12 +777,11 @@ where
                                 "tool_calls",
                             );
                             return Poll::Ready(Some(Ok(chunk)));
-                        } else {
-                            warn!(target: "adapter", "tool_parser 流结束→请求修复");
-                            return Poll::Ready(Some(Err(
-                                OpenAIAdapterError::ToolCallRepairNeeded(buf),
-                            )));
                         }
+                        warn!(target: "adapter", "tool_parser 流结束→请求修复");
+                        return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(
+                            buf,
+                        ))));
                     }
                     ToolParseState::Done => return Poll::Ready(None),
                 },

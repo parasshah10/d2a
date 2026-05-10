@@ -131,7 +131,7 @@ impl StoreManager {
     pub async fn jwt_issued_at(&self) -> Option<u64> {
         let guard = self.config.read().await;
         let iat = guard.admin.jwt_issued_at;
-        if iat > 0 { Some(iat) } else { None }
+        (iat > 0).then_some(iat)
     }
 
     /// 更新 jwt_issued_at 并持久化

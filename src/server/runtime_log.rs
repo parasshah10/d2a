@@ -218,10 +218,10 @@ impl log::Log for LoggerWrapper {
         self.inner.enabled(metadata)
     }
     fn log(&self, record: &log::Record) {
-        self.inner.log(record)
+        self.inner.log(record);
     }
     fn flush(&self) {
-        self.inner.flush()
+        self.inner.flush();
     }
 }
 
@@ -231,7 +231,6 @@ fn parse_level(s: &str) -> log::LevelFilter {
     match level.trim() {
         "trace" => log::LevelFilter::Trace,
         "debug" => log::LevelFilter::Debug,
-        "info" => log::LevelFilter::Info,
         "warn" => log::LevelFilter::Warn,
         "error" => log::LevelFilter::Error,
         "off" => log::LevelFilter::Off,

@@ -129,12 +129,13 @@ fn id_to_display_name(id: &str) -> String {
     id.split('-')
         .map(|word| {
             let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => {
-                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
-                }
-            }
+            chars.next().map_or_else(String::new, |first| {
+                format!(
+                    "{}{}",
+                    first.to_uppercase().collect::<String>(),
+                    chars.as_str().to_lowercase()
+                )
+            })
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -178,7 +179,7 @@ fn unix_to_rfc3339(secs: u64) -> String {
     ];
 
     let mut month = 1u32;
-    let mut day = (remaining_days + 1) as u32;
+    let mut day = u32::try_from(remaining_days + 1).unwrap_or(u32::MAX);
     for dim in &month_days {
         if day <= *dim {
             break;

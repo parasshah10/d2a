@@ -72,13 +72,11 @@ export function ConfigPage() {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
-  const loadConfig = () => {
+  useEffect(() => {
     apiFetchConfig()
       .then(setConfig)
       .catch(() => setMessage({ type: 'err', text: t('config.loadFailed') }));
-  };
-
-  useEffect(loadConfig, []);
+  }, [t]);
 
   if (!config) {
     return <div className="p-4 text-muted-foreground">{t('config.loading')}</div>;
@@ -137,7 +135,9 @@ export function ConfigPage() {
   const handleCancel = () => {
     if (confirm(t('config.cancelConfirm'))) {
       setRevealedKeys({});
-      loadConfig();
+      apiFetchConfig()
+        .then(setConfig)
+        .catch(() => setMessage({ type: 'err', text: t('config.loadFailed') }));
     }
   };
 

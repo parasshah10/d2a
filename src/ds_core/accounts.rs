@@ -31,7 +31,6 @@ impl AccountState {
             0 => Self::Idle,
             1 => Self::Busy,
             2 => Self::Error,
-            3 => Self::Invalid,
             _ => Self::Invalid,
         }
     }
@@ -80,10 +79,10 @@ impl Account {
     }
 
     pub fn display_id(&self) -> &str {
-        if !self.email.is_empty() {
-            &self.email
-        } else {
+        if self.email.is_empty() {
             &self.mobile
+        } else {
+            &self.email
         }
     }
 
@@ -91,7 +90,6 @@ impl Account {
         AccountState::from_u8(self.state.load(Ordering::Relaxed))
     }
 
-    #[allow(dead_code)]
     pub fn is_busy(&self) -> bool {
         self.state() == AccountState::Busy
     }
@@ -124,10 +122,10 @@ impl Drop for AccountGuard {
                 Ordering::Relaxed,
             )
             .ok();
-        let now_ms = SystemTime::now()
+        let d = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+            .unwrap_or_default();
+        let now_ms = (d.as_secs() * 1000 + u64::from(d.subsec_millis())) as i64;
         self.account.last_released.store(now_ms, Ordering::Relaxed);
     }
 }
@@ -306,10 +304,10 @@ impl AccountPool {
             return None;
         }
 
-        let now_ms = SystemTime::now()
+        let d = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+            .unwrap_or_default();
+        let now_ms = (d.as_secs() * 1000 + u64::from(d.subsec_millis())) as i64;
 
         let mut best: Option<Arc<Account>> = None;
         let mut best_idle = i64::MIN;
@@ -388,9 +386,8 @@ impl AccountPool {
     pub async fn re_login_single(&self, email_or_mobile: &str) -> Result<(), String> {
         let client_opt = self.client.read().await.clone();
         let solver_opt = self.solver.read().await.clone();
-        let (client, solver) = match (client_opt, solver_opt) {
-            (Some(c), Some(s)) => (c, s),
-            _ => return Err("client/solver 未初始化".to_string()),
+        let (Some(client), Some(solver)) = (client_opt, solver_opt) else {
+            return Err("client/solver 未初始化".to_string());
         };
 
         let account = self
@@ -456,9 +453,8 @@ impl AccountPool {
 
                 let client_opt = pool.client.read().await.clone();
                 let solver_opt = pool.solver.read().await.clone();
-                let (client, solver) = match (client_opt, solver_opt) {
-                    (Some(c), Some(s)) => (c, s),
-                    _ => continue,
+                let (Some(client), Some(solver)) = (client_opt, solver_opt) else {
+                    continue;
                 };
 
                 for entry in pool.accounts.iter() {

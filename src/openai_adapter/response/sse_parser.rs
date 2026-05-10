@@ -73,11 +73,8 @@ where
                             .push_str(&String::from_utf8_lossy(this.raw_buf));
                         this.raw_buf.clear();
                     }
-                    return if let Some(evt) = try_pop_event(this.text_buf) {
-                        Poll::Ready(Some(Ok(evt)))
-                    } else {
-                        Poll::Ready(None)
-                    };
+                    return try_pop_event(this.text_buf)
+                        .map_or(Poll::Ready(None), |evt| Poll::Ready(Some(Ok(evt))));
                 }
                 Poll::Pending => {
                     decode_utf8_prefix(this.raw_buf, this.text_buf);
@@ -104,7 +101,11 @@ fn decode_utf8_prefix(raw: &mut Vec<u8>, text: &mut String) {
         Err(e) => {
             let up_to = e.valid_up_to();
             if up_to > 0 {
-                unsafe { text.push_str(std::str::from_utf8_unchecked(&raw[..up_to])) };
+                // valid_up_to() 保证该前缀是合法 UTF-8
+                text.push_str(
+                    std::str::from_utf8(&raw[..up_to])
+                        .expect("prefix after valid_up_to() must be valid UTF-8"),
+                );
                 raw.drain(..up_to);
             }
         }

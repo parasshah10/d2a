@@ -166,7 +166,7 @@ where
                         }
                         return Poll::Ready(Some(Ok(chunk)));
                     }
-                    DsFrame::Status(_) => {}
+                    DsFrame::Status(_) | DsFrame::Finish => {}
                     DsFrame::Usage(u) => {
                         trace!(target: "adapter", ">>> conv: usage={}", u);
                         *this.usage_value = Some(u);
@@ -177,18 +177,6 @@ where
                             ))));
                         }
                     }
-                    DsFrame::Finish if !*this.finished => {
-                        trace!(target: "adapter", ">>> conv: finish=stop");
-                        *this.finished = true;
-                        let mut chunk = make_chunk(this.model, Delta::default(), Some("stop"));
-                        if *this.include_usage
-                            && let Some(u) = this.usage_value.take()
-                        {
-                            chunk.usage = Some(make_usage(*this.prompt_tokens, u));
-                        }
-                        return Poll::Ready(Some(Ok(chunk)));
-                    }
-                    DsFrame::Finish => {}
                 },
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => {

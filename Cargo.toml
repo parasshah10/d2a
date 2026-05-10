@@ -4,6 +4,62 @@ version = "0.2.6"
 license = "GPL-3.0"
 edition = "2024"
 
+[lints.rust]
+unsafe_code = "deny"
+unused_import_braces = "deny"
+
+[lints.clippy]
+# ── 基线 ──────────────────────────────────────────────────
+all = "deny"
+
+# ── 安全网（捕获真实 bug 或隐蔽问题）──────────────────────
+await_holding_lock = "deny"
+panic_in_result_fn = "deny"
+cast_lossless = "deny"
+cast_sign_loss = "deny"
+while_float = "deny"
+missing_assert_message = "deny"
+inconsistent_struct_constructor = "deny"
+
+# ── 代码质量 & 性能 ────────────────────────────────────────
+redundant_clone = "deny"
+or_fun_call = "deny"
+string_add = "deny"
+must_use_candidate = "deny"
+future_not_send = "deny"
+trivially_copy_pass_by_ref = "deny"
+filter_map_next = "deny"
+len_zero = "deny"
+large_enum_variant = "deny"
+unnecessary_cast = "deny"
+unnecessary_wraps = "deny"
+
+# ── 代码风格 & 可读性 ──────────────────────────────────────
+option_if_let_else = "deny"
+manual_let_else = "deny"
+if_then_some_else_none = "deny"
+redundant_else = "deny"
+single_match_else = "deny"
+match_same_arms = "deny"
+if_not_else = "deny"
+unnested_or_patterns = "deny"
+explicit_into_iter_loop = "deny"
+range_plus_one = "deny"
+default_trait_access = "deny"
+semicolon_if_nothing_returned = "deny"
+used_underscore_binding = "deny"
+wildcard_imports = "deny"
+struct_excessive_bools = "deny"
+derive_partial_eq_without_eq = "deny"
+
+# ── 已通过检查保留 ────────────────────────────────────────
+unused_self = "deny"
+string_lit_as_bytes = "deny"
+ptr_as_ptr = "deny"
+flat_map_option = "deny"
+tests_outside_test_module = "deny"
+match_bool = "deny"
+
 [dependencies]
 anyhow = "1.0.102"
 axum = "0.8.8"

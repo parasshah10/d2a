@@ -134,7 +134,10 @@ impl OpenAIAdapter {
         let prompt_tokens = self
             .bpe
             .as_ref()
-            .map(|bpe| bpe.encode_with_special_tokens(&prompt).len() as u32)
+            .map(|bpe| {
+                u32::try_from(bpe.encode_with_special_tokens(&prompt).len())
+                    .expect("token count exceeds u32::MAX")
+            })
             .unwrap_or(0);
 
         let file_result = request::files::extract(&req);
@@ -318,7 +321,7 @@ impl OpenAIAdapter {
 
     /// 标记账号为 Error 状态
     pub fn mark_error(&self, email_or_mobile: &str) {
-        self.ds_core.mark_error(email_or_mobile)
+        self.ds_core.mark_error(email_or_mobile);
     }
 
     /// 手动重新登录指定账号
@@ -334,10 +337,10 @@ impl OpenAIAdapter {
         let old_ids: Vec<String> = old_statuses
             .iter()
             .map(|a| {
-                if !a.email.is_empty() {
-                    a.email.clone()
-                } else {
+                if a.email.is_empty() {
                     a.mobile.clone()
+                } else {
+                    a.email.clone()
                 }
             })
             .collect();
@@ -345,10 +348,10 @@ impl OpenAIAdapter {
         let mut _added = 0usize;
         let mut _failed = 0usize;
         for acct in new_accounts {
-            let id = if !acct.email.is_empty() {
-                &acct.email
-            } else {
+            let id = if acct.email.is_empty() {
                 &acct.mobile
+            } else {
+                &acct.email
             };
             if !old_ids.contains(id) {
                 match self.add_account(acct).await {
@@ -365,10 +368,10 @@ impl OpenAIAdapter {
         let new_ids: Vec<&str> = new_accounts
             .iter()
             .map(|a| {
-                if !a.email.is_empty() {
-                    a.email.as_str()
-                } else {
+                if a.email.is_empty() {
                     a.mobile.as_str()
+                } else {
+                    a.email.as_str()
                 }
             })
             .collect();
@@ -504,13 +507,13 @@ impl From<serde_json::Error> for OpenAIAdapterError {
 
 impl OpenAIAdapterError {
     /// 返回对应 HTTP 状态码
+    #[must_use]
     pub fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,
             Self::Overloaded => 429,
             Self::ProviderError(_) => 502,
-            Self::Internal(_) => 500,
-            Self::ToolCallRepairNeeded(_) => 500,
+            Self::Internal(_) | Self::ToolCallRepairNeeded(_) => 500,
         }
     }
 }

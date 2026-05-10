@@ -43,14 +43,13 @@ src/
 │   ├── openai_adapter.rs # Facade: OpenAIAdapter, OpenAIAdapterError, StreamResponse
 │   ├── types.rs         # Request/response structs (ChatCompletionsRequest, etc.)
 │   ├── models.rs        # Model registry and listing endpoints
-│   ├── request/         # Request pipeline: normalize → tools → files → prompt → resolver → tiktoken
-│   │   ├── request.rs   # Facade for submodules
+│   ├── request/         # Request pipeline: normalize → tools → files → prompt → resolver
+│   │   ├── request.rs   # Facade for submodules (also contains #[cfg(test)] tests)
 │   │   ├── normalize.rs # Validation, default params
 │   │   ├── tools.rs     # Tool definition → prompt injection
 │   │   ├── files.rs     # Data URL → FilePayload, HTTP URL → search mode
 │   │   ├── prompt.rs    # ChatML → DeepSeek native tags, tool injection
-│   │   ├── resolver.rs  # Model resolution, capability toggles
-│   │   └── tiktoken.rs  # Token counting
+│   │   └── resolver.rs  # Model resolution, capability toggles
 │   └── response/        # Response pipeline: sse_parser → state → converter → tool_parser
 │       ├── response.rs  # Facade + StreamCfg struct
 │       ├── sse_parser.rs    # SseStream: raw bytes → SseEvent (event+data)
@@ -60,8 +59,11 @@ src/
 │
 ├── anthropic_compat/    # Anthropic protocol translator (on top of openai_adapter)
 │   ├── anthropic_compat.rs # Facade
+│   ├── types.rs         # Request/response structs: MessagesRequest, MessagesResponse, MessagesResponseChunk
+│   ├── models.rs        # Anthropic-format model list generation
 │   ├── request.rs       # Anthropic JSON → OpenAI request mapping
 │   └── response/
+│       ├── response.rs  # Facade for submodules
 │       ├── stream.rs    # OpenAI SSE → Anthropic SSE events
 │       └── aggregate.rs # OpenAI JSON → Anthropic JSON
 │
@@ -81,7 +83,7 @@ src/
 - `config.example.toml` — authoritative configuration reference with all fields documented
 - `examples/adapter_cli.rs` + `examples/adapter_cli/` — debug CLI + JSON request samples
 - `py-e2e-tests/` — Python e2e test suite (uv-managed, JSON-driven scenarios)
-- `docs/` — `code-style.md`, `logging-spec.md`, `deepseek-prompt-injection.md`, `deepseek-api-reference.md`
+- `docs/` — `code-style.md`, `logging-spec.md`, `deepseek-prompt-injection.md`, `deepseek-api-reference.md`, `development.md`; English translations under `docs/en/`
 
 ### Binary / Library Split
 
@@ -110,7 +112,6 @@ On tag push (`.github/workflows/release.yml`):
 
 ```
 build-frontend (npm ci + npm run build)
-build-frontend (npm ci + npm run build)
   ├── build-linux-gnu (cargo build)    │
   ├── build-linux-musl (cross/cargo)   │── release (tar.gz + zip)
   ├── build-macos (cargo build)  │
@@ -118,8 +119,8 @@ build-frontend (npm ci + npm run build)
   └── docker (ghcr.io image)
 ```
 
-`build-frontend` produces a `web-dist` artifact. Each build job downloads it before
-compiling Rust, so `rust_embed` embeds the real frontend assets.
+`build-frontend` produces a `web-dist` artifact. Each platform build job downloads it
+before compiling Rust, so `rust_embed` embeds the real frontend assets.
 
 ### Frontend (`web/`)
 
@@ -130,8 +131,12 @@ The binary embeds `web/dist/` via `rust_embed` at compile time.
 web/
 ├── src/
 │   ├── App.tsx            # Routes (login + protected layout + pages)
-│   ├── lib/api.ts         # Typed API client for all admin endpoints
-│   ├── lib/auth.tsx       # JWT auth context (localStorage token)
+│   ├── lib/               # Shared libraries
+│   │   ├── api.ts         # Typed API client for all admin endpoints
+│   │   ├── auth-context.ts # Auth context provider
+│   │   ├── auth.tsx       # JWT auth context (localStorage token)
+│   │   ├── use-auth.ts    # Auth hook for components
+│   │   └── utils.ts       # Utility functions
 │   ├── pages/             # ConfigPage, DashboardPage, Layout, LoginPage, LogsPage, ModelsPage
 │   └── components/ui/     # shadcn/ui primitives (badge, button, card, input, etc.)
 ├── public/favicon.svg     # → symlink to assets/logo.svg
@@ -139,6 +144,11 @@ web/
 ├── package.json
 └── vite.config.ts
 ```
+
+The frontend includes i18n support (`web/src/i18n/`, `web/src/locales/zh/`, `web/src/locales/en/`)
+and a language switcher component (`web/src/components/LanguageSwitcher.tsx`).
+Library files include `api.ts`, `auth.tsx`, `auth-context.ts`, `use-auth.ts`, and `utils.ts`.
+Pages: `ConfigPage`, `DashboardPage`, `Layout`, `LoginPage`, `LogsPage`, `ModelsPage`.
 
 **Admin panel config editor**: `ConfigPage.tsx` fetches from `GET /admin/api/config`,
 edits all sections (accounts, api_keys, server, deepseek, models, proxy, tool_call tags),
@@ -206,10 +216,9 @@ ChatCompletionsRequest
   → files::extract   |
   → prompt::build    |
   → resolver::resolve|
-  → tiktoken
   → try_chat (ds_core::ChatRequest)
   → if req.stream → ChatCompletionsResponseChunk | else → ChatCompletionsResponse
-```
+```(tiktoken 计数在 `OpenAIAdapter::chat_completions()` 内联完成，非独立 pipeline 模块)
 
 ### Response Pipeline (OpenAI) — 4-Layer Stream Chain
 
@@ -231,8 +240,8 @@ Tool definitions are injected as natural language into the prompt inside a `<thi
 2. **Fuzzy character normalization**: U+FF5C→|, U+2581→_
 3. **JSON repair**: backslash escaping, unquoted keys
 4. **Fallback tags**: configurable via `TagConfig.extra_starts`/`extra_ends` in `config.toml`
-7. **`<invoke>` XML fallback** for alternative tag formats
-8. `arguments` field normalized to always be a JSON string
+5. **`<invoke>` XML fallback** for alternative tag formats
+6. `arguments` field normalized to always be a JSON string
 
 Primary tag: `<tool_calls>` (plural). Configurable fallback tags via `TagConfig` in `config.toml`.
 
@@ -262,7 +271,7 @@ Pure protocol translator on top of `openai_adapter` — no direct `ds_core` acce
 - Request: `Anthropic JSON → to_openai_request() → OpenAIAdapter::chat_completions() / try_chat()`
 - Response: `OpenAI SSE/JSON → from_chat_completion_stream() / from_chat_completion_bytes() → Anthropic SSE/JSON`
 - ID mapping: `chatcmpl-{hex}` → `msg_{hex}`, `call_{suffix}` → `toolu_{suffix}`
-- `ToolUnion` in `request.rs` defaults to `Custom` type when absent (backward compat with Claude Code)
+- `ToolUnion` in `types.rs` defaults to `Custom` type when absent (backward compat with Claude Code)
 
 ### Error Translation Chain
 
@@ -290,13 +299,14 @@ The `x-ds-account` HTTP response header carries the account identifier upstream.
 
 | Endpoint | Handler | Description |
 |----------|---------|-------------|
-| `GET /` | `handlers::root` | Redirect to /admin |
-| `POST /v1/chat/completions` | `handlers::openai_chat` | OpenAI chat completion |
-| `GET /v1/models` | `handlers::openai_models` | List models |
-| `GET /v1/models/{id}` | `handlers::openai_model` | Get model |
+| `GET /` | `server::root` | Redirect to /admin |
+| `GET /health` | `server::health` | Health check (`{"status": "ok"}`) |
+| `POST /v1/chat/completions` | `handlers::chat_completions` | OpenAI chat completion |
+| `GET /v1/models` | `handlers::list_models` | List models |
+| `GET /v1/models/{id}` | `handlers::get_model` | Get model |
 | `POST /anthropic/v1/messages` | `handlers::anthropic_messages` | Anthropic messages |
-| `GET /anthropic/v1/models` | `handlers::anthropic_models` | List models (Anthropic format) |
-| `GET /anthropic/v1/models/{id}` | `handlers::anthropic_model` | Get model (Anthropic format) |
+| `GET /anthropic/v1/models` | `handlers::anthropic_list_models` | List models (Anthropic format) |
+| `GET /anthropic/v1/models/{id}` | `handlers::anthropic_get_model` | Get model (Anthropic format) |
 
 Optional Bearer auth via `[[api_keys]]` in config; no auth when empty.|
 
@@ -349,8 +359,8 @@ Follow `docs/code-style.md`:
 - Uncommented values in `config.toml` = required; commented = optional with default
 - `src/config.rs` is the single source for config loading — no other module reads config files
 - `Config::load_with_args()` returns `(Config, PathBuf)` — the path is propagated to `AppState.config_path` for reload
-- `Config` is wrapped in `Arc<RwLock<Config>>` — runtime-mutable, admin panel changes auto-persist via `Config::save()`
-- `Config::save()` writes atomically (tmp + rename, 0600 permissions). `Config` now includes `AdminConfig` (password hash, JWT secret) and `api_keys: Vec<ApiKeyEntry>` — no separate JSON files
+- In the server layer, `Config` is wrapped in `Arc<tokio::sync::RwLock<Config>>` — runtime-mutable, admin panel changes auto-persist via `Config::save()`
+- `Config::save()` writes atomically (tmp + rename, 0600 permissions). `Config` includes `AdminConfig` (password hash, JWT secret) and `api_keys: Vec<ApiKeyEntry>` — no separate JSON files
 
 ### Testing
 
@@ -367,7 +377,7 @@ Follow `docs/code-style.md`:
 - Do **NOT** use `println!`/`eprintln!` in library code — use `log` crate with target
 - Do **NOT** use untargeted log macros — always specify `target: "..."`
 - Do **NOT** access `ds_core` directly from `anthropic_compat` — always go through `OpenAIAdapter`
-- Do **NOT** add `#[allow(...)]` outside `src/ds_core/client.rs` — dead API methods and deserialized fields for API symmetry are expected only in the raw HTTP client layer
+- Do **NOT** use `#[allow(...)]` in any file except `src/ds_core/client.rs` — dead API methods and deserialized fields for API symmetry are expected only in the raw HTTP client layer. New lint exemptions in other files must be resolved (refactor or consume the value) rather than suppressed.
 - Do **NOT** keep admin/auth config in separate JSON files (`admin.json`, `api_keys.json`) — they are merged into `Config` fields and persisted via `Config::save()` into `config.toml`
 - Do **NOT** run `git checkout`, `git commit`, or `gh` commands without explicit user permission — always ask before destructive or persistent operations
 ---
@@ -397,6 +407,7 @@ Follow `docs/code-style.md`:
 | Chat orchestration + file upload | `src/ds_core/completions.rs` | `v0_chat()`, history splitting, upload retry, `GuardedStream` |
 | OpenAI request parsing | `src/openai_adapter/request/` | normalize → tools → files → prompt → resolver |
 | File upload extraction | `src/openai_adapter/request/files.rs` | data URL → FilePayload, HTTP URL → search mode |
+| Token counting (tiktoken) | `src/openai_adapter.rs` | `OpenAIAdapter::bpe` field, inlined in `chat_completions()` |
 | OpenAI response conversion | `src/openai_adapter/response/` | sse_parser → state → converter → tool_parser |
 | Tool call parser & stop sequences | `src/openai_adapter/response/tool_parser.rs` | `TagConfig` with extra_starts/extra_ends; stop filtering embedded |
 | Stream pipeline config | `src/openai_adapter/response.rs` | `StreamCfg` struct (consolidates 8 stream params) |

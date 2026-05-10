@@ -76,13 +76,11 @@ fn tool_call_name(call: &ToolCall) -> String {
 }
 
 fn parse_tool_call_input(call: &ToolCall) -> serde_json::Value {
-    if let Some(ref func) = call.function {
-        serde_json::from_str(&func.arguments).unwrap_or(serde_json::json!({}))
-    } else if let Some(ref custom) = call.custom {
-        custom.input.clone().unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    }
+    call.function
+        .as_ref()
+        .and_then(|f| serde_json::from_str(&f.arguments).ok())
+        .or_else(|| call.custom.as_ref().and_then(|c| c.input.clone()))
+        .unwrap_or_else(|| serde_json::json!({}))
 }
 
 #[cfg(test)]

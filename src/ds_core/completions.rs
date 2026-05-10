@@ -419,7 +419,7 @@ impl Completions {
                     .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
                     .and_then(|v| {
                         v.get("content")
-                            .or(v.get("finish_reason"))
+                            .or_else(|| v.get("finish_reason"))
                             .and_then(|c| c.as_str().map(String::from))
                     })
                     .unwrap_or_else(|| "(unknown)".into());
@@ -573,7 +573,7 @@ impl Completions {
 
     /// 标记账号为 Error 状态
     pub fn mark_error(&self, email_or_mobile: &str) {
-        self.pool.mark_error(email_or_mobile)
+        self.pool.mark_error(email_or_mobile);
     }
 
     /// 手动重新登录指定账号
@@ -680,10 +680,9 @@ fn parse_native_blocks(prompt: &str) -> Vec<ChatBlock> {
         };
         let role = prompt[role_start..role_end].trim().to_lowercase();
         let content_start = role_end + TAG_END.len();
-        let content_end = match prompt[content_start..].find(TAG_START) {
-            Some(i) => content_start + i,
-            None => prompt.len(),
-        };
+        let content_end = prompt[content_start..]
+            .find(TAG_START)
+            .map_or(prompt.len(), |i| content_start + i);
         let content = prompt[content_start..content_end]
             .trim_end_matches('\n')
             .to_string();

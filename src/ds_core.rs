@@ -108,7 +108,7 @@ impl DeepSeekCore {
 
     /// 标记账号为 Error 状态
     pub fn mark_error(&self, email_or_mobile: &str) {
-        self.completions.mark_error(email_or_mobile)
+        self.completions.mark_error(email_or_mobile);
     }
 
     /// 手动重新登录指定账号

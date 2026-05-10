@@ -96,21 +96,22 @@ impl Stats {
             model_stats_data,
             key_stats_data,
             logs_data,
-        ) = if let Some(ref s) = store {
-            let st = futures::executor::block_on(s.load_stats());
-            (
-                st.total_requests,
-                st.success_requests,
-                st.failed_requests,
-                st.total_prompt_tokens,
-                st.total_completion_tokens,
-                st.model_stats,
-                st.key_stats,
-                st.request_logs,
-            )
-        } else {
-            (0, 0, 0, 0, 0, HashMap::new(), HashMap::new(), Vec::new())
-        };
+        ) = store.as_ref().map_or_else(
+            || (0, 0, 0, 0, 0, HashMap::new(), HashMap::new(), Vec::new()),
+            |s| {
+                let st = futures::executor::block_on(s.load_stats());
+                (
+                    st.total_requests,
+                    st.success_requests,
+                    st.failed_requests,
+                    st.total_prompt_tokens,
+                    st.total_completion_tokens,
+                    st.model_stats,
+                    st.key_stats,
+                    st.request_logs,
+                )
+            },
+        );
 
         // 恢复模型统计
         let model_stats: DashMap<String, ModelStats> = DashMap::new();
@@ -216,15 +217,6 @@ impl Stats {
                 .fetch_add(completion_tokens, Ordering::Relaxed);
             ku.requests.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    /// 记录 token 用量（无模型维度）
-    #[allow(dead_code)]
-    pub fn record_tokens(&self, prompt_tokens: u64, completion_tokens: u64) {
-        self.total_prompt_tokens
-            .fetch_add(prompt_tokens, Ordering::Relaxed);
-        self.total_completion_tokens
-            .fetch_add(completion_tokens, Ordering::Relaxed);
     }
 
     /// 记录一次请求完成
@@ -434,7 +426,8 @@ impl RequestTimer {
 impl Drop for RequestTimer {
     fn drop(&mut self) {
         if !self.marked {
-            let latency = self.start.elapsed().as_millis() as u64;
+            let elapsed = self.start.elapsed();
+            let latency = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
             self.stats.record_request(false, latency);
         }
     }
@@ -443,14 +436,16 @@ impl Drop for RequestTimer {
 impl RequestTimer {
     /// 标记请求成功并记录统计
     pub fn mark_success(mut self) {
-        let latency = self.start.elapsed().as_millis() as u64;
+        let elapsed = self.start.elapsed();
+        let latency = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
         self.stats.record_request(true, latency);
         self.marked = true;
     }
 
     /// 标记请求失败并记录统计
     pub fn mark_failure(mut self) {
-        let latency = self.start.elapsed().as_millis() as u64;
+        let elapsed = self.start.elapsed();
+        let latency = elapsed.as_secs() * 1000 + u64::from(elapsed.subsec_millis());
         self.stats.record_request(false, latency);
         self.marked = true;
     }

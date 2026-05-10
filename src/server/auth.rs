@@ -62,9 +62,8 @@ pub async fn sign_jwt(store: &StoreManager) -> Option<String> {
 
 /// 验证 JWT，返回是否有效
 pub async fn verify_jwt(store: &StoreManager, token: &str) -> bool {
-    let secret = match store.jwt_secret().await {
-        Some(s) => s,
-        None => return false,
+    let Some(secret) = store.jwt_secret().await else {
+        return false;
     };
 
     let parts: Vec<&str> = token.split('.').collect();
@@ -74,16 +73,14 @@ pub async fn verify_jwt(store: &StoreManager, token: &str) -> bool {
 
     // 验证 HMAC-SHA256 签名
     let signing_input = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
+        return false;
     };
     mac.update(signing_input.as_bytes());
     let expected = mac.finalize().into_bytes();
 
-    let sig_bytes = match base64url_decode(parts[2]) {
-        Some(s) => s,
-        None => return false,
+    let Some(sig_bytes) = base64url_decode(parts[2]) else {
+        return false;
     };
 
     // CtOutput deref 到 [u8]，可以直接比较
@@ -92,14 +89,12 @@ pub async fn verify_jwt(store: &StoreManager, token: &str) -> bool {
     }
 
     // 解析 payload
-    let payload_bytes = match base64url_decode(parts[1]) {
-        Some(b) => b,
-        None => return false,
+    let Some(payload_bytes) = base64url_decode(parts[1]) else {
+        return false;
     };
 
     #[derive(Deserialize)]
     struct JwtPayload {
-        #[allow(dead_code)]
         sub: String,
         iat: u64,
         exp: u64,
@@ -109,6 +104,8 @@ pub async fn verify_jwt(store: &StoreManager, token: &str) -> bool {
         Ok(p) => p,
         Err(_) => return false,
     };
+    // sub 仅用于反序列化验证，不需要读取
+    let _ = payload.sub;
 
     // 过期检查（60 秒 leeway，对齐原 jsonwebtoken 行为）
     let now = epoch_secs();

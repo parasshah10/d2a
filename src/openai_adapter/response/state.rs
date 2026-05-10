@@ -157,13 +157,10 @@ impl DsState {
             }
             "response/accumulated_token_usage" | "accumulated_token_usage" => {
                 if let Some(n) = val.as_u64() {
-                    let u = n as u32;
+                    let u = u32::try_from(n).unwrap_or(u32::MAX);
                     self.accumulated_token_usage = Some(u);
                     frames.push(DsFrame::Usage(u));
                 }
-            }
-            "response/search_status" | "response/search_results" => {
-                // 当前忽略，未来可映射到 annotations
             }
             "response/fragments/-1/content" => {
                 if let Some(s) = val.as_str()
@@ -183,9 +180,6 @@ impl DsState {
                         }
                     }
                 }
-            }
-            "response/fragments/-1/elapsed_secs" => {
-                // 思考耗时，当前忽略
             }
             "response/fragments" if op == Some("APPEND") => {
                 if let Some(arr) = val.as_array() {

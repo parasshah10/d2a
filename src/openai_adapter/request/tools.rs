@@ -53,7 +53,7 @@ pub(crate) fn extract(req: &ChatCompletionsRequest) -> Result<ToolContext, Strin
             }
         }
         ToolChoice::AllowedTools(AllowedToolsChoice { allowed_tools, .. }) => {
-            build_allowed_tools_instruction(allowed_tools, &mut instruction_lines)?;
+            build_allowed_tools_instruction(allowed_tools, &mut instruction_lines);
         }
         ToolChoice::Named(named) => {
             instruction_lines.push(format!(
@@ -73,11 +73,7 @@ pub(crate) fn extract(req: &ChatCompletionsRequest) -> Result<ToolContext, Strin
         instruction_lines.push("**注意：一次只能调用一个工具。**".to_string());
     }
 
-    let format_block = if has_tools(req) {
-        Some(build_tool_instruction_block(req))
-    } else {
-        None
-    };
+    let format_block = has_tools(req).then(|| build_tool_instruction_block(req));
 
     let defs_text = if has_tools(req) {
         let mut lines = vec!["你可以使用以下工具：".to_string()];
@@ -136,10 +132,7 @@ fn validate_tool_choice(tc: &ToolChoice, tools: Option<&[Tool]>) -> Result<(), S
     }
 }
 
-fn build_allowed_tools_instruction(
-    allowed_tools: &AllowedTools,
-    lines: &mut Vec<String>,
-) -> Result<(), String> {
+fn build_allowed_tools_instruction(allowed_tools: &AllowedTools, lines: &mut Vec<String>) {
     if let Some(tool_list) = &allowed_tools.tools {
         let names: Vec<String> = tool_list
             .iter()
@@ -157,7 +150,6 @@ fn build_allowed_tools_instruction(
     if allowed_tools.mode == "required" {
         lines.push("**注意：你必须调用一个或多个工具。**".to_string());
     }
-    Ok(())
 }
 
 fn format_tool(tool: &Tool, idx: usize) -> Result<String, String> {

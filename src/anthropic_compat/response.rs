@@ -26,11 +26,13 @@ pub(crate) fn finish_reason_map(reason: &str) -> String {
 
 /// OpenAI id 格式为 chatcmpl-xxx，映射为 msg_xxx
 pub(crate) fn map_id(openai_id: &str) -> String {
-    if let Some(hex) = openai_id.strip_prefix("chatcmpl-") {
-        format!("msg_{}", hex)
-    } else if let Some(suffix) = openai_id.strip_prefix("call_") {
-        format!("toolu_{}", suffix)
-    } else {
-        format!("msg_{}", openai_id)
-    }
+    openai_id
+        .strip_prefix("chatcmpl-")
+        .map(|hex| format!("msg_{}", hex))
+        .or_else(|| {
+            openai_id
+                .strip_prefix("call_")
+                .map(|suffix| format!("toolu_{}", suffix))
+        })
+        .unwrap_or_else(|| format!("msg_{}", openai_id))
 }

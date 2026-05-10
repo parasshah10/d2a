@@ -89,8 +89,9 @@ fn openai_error_response(err: &ServerError) -> Response {
                 OpenAIAdapterError::BadRequest(_) => ("invalid_request_error", "bad_request"),
                 OpenAIAdapterError::Overloaded => ("server_error", "overloaded"),
                 OpenAIAdapterError::ProviderError(_) => ("server_error", "provider_error"),
-                OpenAIAdapterError::Internal(_) => ("server_error", "internal_error"),
-                OpenAIAdapterError::ToolCallRepairNeeded(_) => ("server_error", "internal_error"),
+                OpenAIAdapterError::Internal(_) | OpenAIAdapterError::ToolCallRepairNeeded(_) => {
+                    ("server_error", "internal_error")
+                }
             };
             (status, error_type, code)
         }

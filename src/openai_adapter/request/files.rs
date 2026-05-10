@@ -26,9 +26,8 @@ pub(crate) fn extract(req: &ChatCompletionsRequest) -> ExtractResult {
     let mut has_http_urls = false;
 
     for msg in &req.messages {
-        let parts = match &msg.content {
-            Some(MessageContent::Parts(parts)) => parts,
-            _ => continue,
+        let Some(MessageContent::Parts(parts)) = &msg.content else {
+            continue;
         };
         for part in parts {
             match part.ty.as_str() {

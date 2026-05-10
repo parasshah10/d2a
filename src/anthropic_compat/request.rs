@@ -93,7 +93,7 @@ pub(crate) fn into_chat_completions(req: MessagesRequest) -> ChatCompletionsRequ
         top_logprobs: None,
         user: None,
         verbosity: None,
-        _extra: Default::default(),
+        _extra: serde_json::Value::default(),
     }
 }
 
@@ -394,7 +394,7 @@ fn convert_tools_and_choice(req: &MessagesRequest) -> (Option<Vec<Tool>>, Option
         .map(|tc| tc.disable_parallel())
         .unwrap_or(false);
 
-    let parallel_tool_calls = if disable_parallel { Some(false) } else { None };
+    let parallel_tool_calls = disable_parallel.then_some(false);
 
     (tools, parallel_tool_calls)
 }

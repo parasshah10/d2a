@@ -167,7 +167,7 @@ pub struct Message {
 }
 
 /// 消息内容：纯文本 或 多模态 parts
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
@@ -175,7 +175,7 @@ pub enum MessageContent {
 }
 
 /// 多模态内容块
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct ContentPart {
     #[serde(rename = "type")]
     pub ty: String,
@@ -191,20 +191,20 @@ pub struct ContentPart {
     pub refusal: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct ImageUrlContent {
     pub url: String,
     #[serde(default)]
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct InputAudioContent {
     pub data: String,
     pub format: String,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct FileContent {
     #[serde(default)]
     pub file_data: Option<String>,
@@ -215,7 +215,7 @@ pub struct FileContent {
 }
 
 /// stop 序列：单字符串或字符串数组
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum StopSequence {
     Single(String),

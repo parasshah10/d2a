@@ -107,15 +107,16 @@ impl From<OpenAIAdapterError> for AnthropicCompatError {
         match e {
             OpenAIAdapterError::BadRequest(msg) => Self::BadRequest(msg),
             OpenAIAdapterError::Overloaded => Self::Overloaded,
-            OpenAIAdapterError::ProviderError(msg) => Self::Internal(msg),
-            OpenAIAdapterError::Internal(msg) => Self::Internal(msg),
-            OpenAIAdapterError::ToolCallRepairNeeded(msg) => Self::Internal(msg),
+            OpenAIAdapterError::ProviderError(msg)
+            | OpenAIAdapterError::Internal(msg)
+            | OpenAIAdapterError::ToolCallRepairNeeded(msg) => Self::Internal(msg),
         }
     }
 }
 
 impl AnthropicCompatError {
     /// 返回对应 HTTP 状态码
+    #[must_use]
     pub fn status_code(&self) -> u16 {
         match self {
             Self::BadRequest(_) => 400,

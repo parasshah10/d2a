@@ -84,16 +84,16 @@ impl<T: serde::de::DeserializeOwned> Envelope<T> {
                 msg: data.biz_msg,
             });
         }
-        match data.biz_data {
-            Some(t) => Ok(t),
-            None => {
+        data.biz_data.map_or_else(
+            || {
                 // 允许 biz_data 为 null，尝试从 null 构造 T（仅当 T 是 Option 时成功）
                 serde_json::from_value(serde_json::Value::Null).map_err(|_| ClientError::Business {
                     code: -1,
                     msg: "missing biz_data".into(),
                 })
-            }
-        }
+            },
+            Ok,
+        )
     }
 }
 

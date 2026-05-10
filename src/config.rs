@@ -187,6 +187,7 @@ fn default_max_output_tokens() -> Vec<u32> {
 
 impl DeepSeekConfig {
     /// 生成 OpenAI 模型注册表映射
+    #[must_use]
     pub fn model_registry(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
         for (i, ty) in self.model_types.iter().enumerate() {

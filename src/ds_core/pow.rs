@@ -129,11 +129,7 @@ impl PowSolver {
                 })
                 .map(|e| e.name().to_string())
                 .collect();
-            if candidates.len() == 1 {
-                Some(candidates.into_iter().next().unwrap())
-            } else {
-                None
-            }
+            (candidates.len() == 1).then(|| candidates.into_iter().next().unwrap())
         })
         .ok_or_else(|| PowError::WasmInit("wasm_solve export not found".to_string()))?;
 
@@ -196,13 +192,17 @@ impl PowSolver {
 
         let mut status_buf = [0u8; 4];
         memory
-            .read(&mut store, retptr as usize, &mut status_buf)
+            .read(&mut store, retptr.cast_unsigned() as usize, &mut status_buf)
             .map_err(|e| PowError::Execution(e.to_string()))?;
         let status = i32::from_le_bytes(status_buf);
 
         let mut value_buf = [0u8; 8];
         memory
-            .read(&mut store, (retptr + 8) as usize, &mut value_buf)
+            .read(
+                &mut store,
+                (retptr + 8).cast_unsigned() as usize,
+                &mut value_buf,
+            )
             .map_err(|e| PowError::Execution(e.to_string()))?;
         let value = f64::from_le_bytes(value_buf);
 
@@ -232,12 +232,12 @@ fn write_string(
     text: &str,
 ) -> Result<(i32, i32), PowError> {
     let bytes = text.as_bytes();
-    let len = bytes.len() as i32;
+    let len = i32::try_from(bytes.len()).expect("bytes length exceeds i32::MAX");
     let ptr = alloc
         .call(store.as_context_mut(), (len, 1))
         .map_err(|e| PowError::Execution(e.to_string()))?;
     memory
-        .write(store.as_context_mut(), ptr as usize, bytes)
+        .write(store.as_context_mut(), ptr.cast_unsigned() as usize, bytes)
         .map_err(|e| PowError::Execution(e.to_string()))?;
     Ok((ptr, len))
 }
