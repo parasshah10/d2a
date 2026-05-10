@@ -10,8 +10,17 @@ RUN cargo chef prepare --recipe-path recipe.json
   
 # ── Stage 1b: Build dependencies only (cached layer) ──────────────────────────  
 FROM chef AS builder  
-RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential cmake clang libclang-dev golang && \  
+# Install C compilers, CMake, Go, and Clang for boring-sys2
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    cmake \
+    clang \
+    libclang-dev \
+    golang && \
     rm -rf /var/lib/apt/lists/*  
+    
 COPY --from=planner /app/recipe.json recipe.json  
 RUN cargo chef cook --release --recipe-path recipe.json  
   
@@ -39,4 +48,4 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh && \
 USER 1000  
   
 EXPOSE 7860  
-ENTRYPOINT["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
