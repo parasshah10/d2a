@@ -1,5 +1,5 @@
 # ── Stage 0: cargo-chef installer ─────────────────────────────────────────────  
-FROM rust:1.85-slim AS chef  
+FROM rust:bookworm-slim AS chef  
 RUN cargo install cargo-chef --locked
 WORKDIR /app  
   
