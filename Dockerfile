@@ -1,9 +1,9 @@
 # ── Stage 0: Build Frontend (Bun) ─────────────────────────────────────────────
 FROM oven/bun:1 AS frontend
 WORKDIR /app
-# Copy BOTH directories because Vite reads from py-e2e-tests/config.toml
-COPY web/ ./web/
-COPY py-e2e-tests/ ./py-e2e-tests/
+# 🚀 FIX: Copy the ENTIRE repository. This guarantees Vite/Bun has every 
+# single file, asset, and config it needs, exactly matching your CI pipeline.
+COPY . .
 WORKDIR /app/web
 RUN bun install --frozen-lockfile
 RUN bun run build
@@ -39,7 +39,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # ── Stage 2c: Build application code ──────────────────────────────────────────  
 COPY . .  
 
-# 🚀 Copy the built frontend from the Bun stage into the Rust stage!
+# Copy the successfully built frontend from Stage 0 into the exact folder Rust expects
 COPY --from=frontend /app/web/dist ./web/dist
 
 RUN cargo build --release  
@@ -64,4 +64,4 @@ RUN sed -i 's/\r$//' /app/entrypoint.sh && \
 USER 1000  
   
 EXPOSE 7860  
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT["/app/entrypoint.sh"]
